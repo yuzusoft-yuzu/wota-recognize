@@ -2,11 +2,10 @@ FROM python:3.11-slim
 
 # 安装 OpenCV 和 Faiss 所需的系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
