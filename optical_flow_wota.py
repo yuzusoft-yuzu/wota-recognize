@@ -166,16 +166,19 @@ class OpticalFlowEngine:
 
     def __init__(self, method: str = "raft", device: str = "cuda"):
         self.method = method.lower()
-        self.device = device if torch.cuda.is_available() else "cpu"
         self.model = None
         if self.method == "raft":
             if not HAS_RAFT:
                 warnings.warn("RAFT 不可用，回退到 Farneback")
                 self.method = "farneback"
+                self.device = "cpu"
             else:
+                self.device = device if torch.cuda.is_available() else "cpu"
                 self.model = raft_large(weights=Raft_Large_Weights.DEFAULT)
                 self.model.to(self.device)
                 self.model.eval()
+        else:
+            self.device = "cpu"
 
     def compute(self, prev_frame: np.ndarray, curr_frame: np.ndarray, mask: np.ndarray = None):
         """
