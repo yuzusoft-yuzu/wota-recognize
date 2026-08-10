@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wota艺 技术识别</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* 背景动态光效 */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(0, 255, 255, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(255, 0, 150, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(255, 165, 0, 0.04) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ---------- 头部 ---------- */
+        .header {
+            text-align: center;
+            padding: 40px 0 30px;
+        }
+
+        .header h1 {
+            font-size: 2.8em;
+            font-weight: 900;
+            letter-spacing: 0.05em;
+            background: linear-gradient(135deg, #00ffcc, #ff00aa, #ff8800);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: none;
+            margin-bottom: 8px;
+        }
+
+        .header .subtitle {
+            font-size: 1em;
+            color: #888;
+            letter-spacing: 0.2em;
+        }
+
+        .db-badge {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            letter-spacing: 0.05em;
+        }
+        .db-badge.ready {
+            background: rgba(0,255,170,0.12);
+            border: 1px solid rgba(0,255,170,0.3);
+            color: #00ffaa;
+        }
+        .db-badge.empty {
+            background: rgba(255,100,100,0.1);
+            border: 1px solid rgba(255,100,100,0.3);
+            color: #ff6666;
+        }
+
+        /* ---------- 主卡片 ---------- */
+        .main-card {
+            background: rgba(20,20,35,0.85);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 30px;
+            backdrop-filter: blur(12px);
+            margin-bottom: 24px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .section-title {
+            font-size: 1.1em;
+            font-weight: 700;
+            color: #00ffcc;
+            margin-bottom: 20px;
+            letter-spacing: 0.1em;
+        }
+
+        /* ---------- 上传区 ---------- */
+        .upload-zone {
+            border: 2px dashed rgba(0,255,204,0.3);
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+            background: rgba(0,255,204,0.02);
+        }
+        .upload-zone:hover, .upload-zone.drag-over {
+            border-color: #00ffcc;
+            background: rgba(0,255,204,0.06);
+            box-shadow: 0 0 30px rgba(0,255,204,0.1);
+        }
+        .upload-zone .icon {
+            font-size: 3em;
+            margin-bottom: 12px;
+        }
+        .upload-zone .text {
+            font-size: 1.1em;
+            color: #aaa;
+        }
+        .upload-zone .hint {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 8px;
+        }
+        .upload-zone input[type="file"] {
+            display: none;
+        }
+
+        /* 已选文件 */
+        .file-info {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            margin-top: 16px;
+            padding: 12px 16px;
+            background: rgba(0,255,204,0.06);
+            border-radius: 8px;
+            border: 1px solid rgba(0,255,204,0.15);
+        }
+        .file-info.show { display: flex; }
+        .file-info .name {
+            flex: 1;
+            font-size: 0.9em;
+            color: #ccc;
+            word-break: break-all;
+        }
+        .file-info .size {
+            font-size: 0.8em;
+            color: #777;
+        }
+
+        /* 颜色选择 */
+        .color-options {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+        .color-chip {
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.15);
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+            background: transparent;
+            color: #aaa;
+        }
+        .color-chip:hover {
+            border-color: rgba(255,255,255,0.35);
+            color: #ddd;
+        }
+        .color-chip.active {
+            border-color: #00ffcc;
+            color: #00ffcc;
+            background: rgba(0,255,204,0.1);
+            box-shadow: 0 0 12px rgba(0,255,204,0.15);
+        }
+
+        /* 按钮 */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 32px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1em;
+            font-weight: 700;
+            cursor: pointer;
+            letter-spacing: 0.05em;
+            transition: all 0.3s;
+            margin-top: 16px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #00ffcc, #00cc99);
+            color: #0a0a0f;
+            box-shadow: 0 4px 20px rgba(0,255,204,0.25);
+        }
+        .btn-primary:hover {
+            box-shadow: 0 6px 30px rgba(0,255,204,0.4);
+            transform: translateY(-1px);
+        }
+        .btn-primary:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .btn-retry {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #ccc;
+        }
+        .btn-retry:hover {
+            border-color: #00ffcc;
+            color: #00ffcc;
+        }
+
+        .action-row {
+            text-align: center;
+            margin-top: 8px;
+        }
+
+        /* ---------- 进度条 ---------- */
+        .progress-section {
+            display: none;
+            margin-top: 24px;
+        }
+        .progress-section.show { display: block; }
+        .progress-bar-wrap {
+            height: 6px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ffcc, #ff00aa);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+            width: 0%;
+        }
+        .progress-text {
+            font-size: 0.85em;
+            color: #888;
+            text-align: center;
+        }
+
+        /* ---------- 结果区 ---------- */
+        .result-section {
+            display: none;
+        }
+        .result-section.show { display: block; }
+
+        .top-result {
+            text-align: center;
+            padding: 24px;
+            border-radius: 12px;
+            background: rgba(0,255,170,0.05);
+            border: 1px solid rgba(0,255,170,0.15);
+            margin-bottom: 24px;
+        }
+        .top-result .move-name {
+            font-size: 2.2em;
+            font-weight: 900;
+            color: #00ffcc;
+            letter-spacing: 0.05em;
+        }
+        .top-result .confidence-big {
+            font-size: 3em;
+            font-weight: 900;
+            background: linear-gradient(135deg, #00ffcc, #ff00aa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .top-result .label {
+            font-size: 0.85em;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        /* 候选列表 */
+        .prediction-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .prediction-item {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 14px 18px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.06);
+            transition: all 0.2s;
+        }
+        .prediction-item.best {
+            border-color: rgba(0,255,204,0.3);
+            background: rgba(0,255,204,0.05);
+        }
+        .prediction-item .rank {
+            font-size: 0.9em;
+            font-weight: 700;
+            color: #888;
+            width: 24px;
+        }
+        .prediction-item.best .rank { color: #00ffcc; }
+        .prediction-item .info {
+            flex: 1;
+        }
+        .prediction-item .info .name {
+            font-size: 1.05em;
+            font-weight: 700;
+            color: #ddd;
+        }
+        .prediction-item .info .cat {
+            font-size: 0.8em;
+            color: #666;
+        }
+        .prediction-item .confidence-col {
+            text-align: right;
+        }
+        .prediction-item .conf-num {
+            font-size: 1.3em;
+            font-weight: 900;
+            color: #00ffcc;
+        }
+        .prediction-item .conf-bar-wrap {
+            width: 120px;
+            height: 4px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 2px;
+            margin-top: 4px;
+            overflow: hidden;
+        }
+        .prediction-item .conf-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ffcc, #00cc88);
+            border-radius: 2px;
+        }
+
+        /* 输出文件 */
+        .output-files {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-top: 24px;
+        }
+        .output-card {
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .output-card .img-wrap {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background: #111;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .output-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .output-card video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .output-card .label-row {
+            padding: 10px 14px;
+            font-size: 0.8em;
+            color: #777;
+        }
+
+        /* ---------- 错误 ---------- */
+        .error-box {
+            display: none;
+            padding: 16px;
+            background: rgba(255,60,60,0.1);
+            border: 1px solid rgba(255,60,60,0.3);
+            border-radius: 10px;
+            color: #ff6666;
+            margin-top: 16px;
+            font-size: 0.9em;
+        }
+        .error-box.show { display: block; }
+
+        /* ---------- 底部 ---------- */
+        .footer {
+            text-align: center;
+            padding: 30px;
+            color: #444;
+            font-size: 0.8em;
+            letter-spacing: 0.1em;
+        }
+
+        /* ---------- 导航 ---------- */
+        .nav-tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .nav-tab {
+            padding: 12px 28px;
+            font-size: 0.95em;
+            font-weight: 700;
+            color: #666;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+            letter-spacing: 0.05em;
+            user-select: none;
+        }
+        .nav-tab:hover { color: #aaa; }
+        .nav-tab.active {
+            color: #00ffcc;
+            border-bottom-color: #00ffcc;
+        }
+
+        /* ---------- 面板切换 ---------- */
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* ---------- 数据库管理 ---------- */
+        .form-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+        .form-input {
+            flex: 1;
+            min-width: 150px;
+            padding: 10px 14px;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 8px;
+            background: rgba(255,255,255,0.04);
+            color: #ddd;
+            font-size: 0.9em;
+            outline: none;
+            transition: border 0.2s;
+        }
+        .form-input:focus {
+            border-color: #00ffcc;
+        }
+        .form-input::placeholder {
+            color: #555;
+        }
+
+        .move-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-size: 0.9em;
+        }
+        .move-table th {
+            text-align: left;
+            padding: 10px 14px;
+            color: #888;
+            font-weight: 600;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .move-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            color: #ccc;
+        }
+        .move-table .cat-tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            background: rgba(0,255,204,0.1);
+            color: #00ffcc;
+            border: 1px solid rgba(0,255,204,0.2);
+        }
+        .btn-sm {
+            padding: 5px 12px;
+            font-size: 0.8em;
+            border-radius: 6px;
+            border: 1px solid rgba(255,80,80,0.3);
+            background: transparent;
+            color: #ff5555;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-sm:hover {
+            background: rgba(255,80,80,0.15);
+            border-color: #ff5555;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #555;
+            font-size: 0.95em;
+        }
+
+        .success-toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            background: rgba(0,255,170,0.15);
+            border: 1px solid rgba(0,255,170,0.3);
+            border-radius: 10px;
+            color: #00ffcc;
+            font-size: 0.9em;
+            z-index: 999;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .success-toast.show { opacity: 1; }
+
+        /* ---------- 管理员登录 ---------- */
+        .login-card {
+            max-width: 380px;
+            margin: 60px auto;
+            padding: 36px 32px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px;
+            text-align: center;
+        }
+        .login-card h3 {
+            font-size: 1.1em;
+            color: #ccc;
+            margin-bottom: 8px;
+        }
+        .login-card .hint {
+            font-size: 0.8em;
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .login-card .form-input {
+            width: 100%;
+            box-sizing: border-box;
+            text-align: center;
+            margin-bottom: 12px;
+        }
+        .login-error {
+            color: #ff6666;
+            font-size: 0.8em;
+            margin-top: 8px;
+            display: none;
+        }
+
+        .delete-modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .delete-modal {
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 28px 24px;
+            width: 380px;
+            max-width: 90%;
+        }
+        .delete-modal h3 {
+            margin: 0 0 4px;
+            font-size: 1.1em;
+            color: #ff6666;
+        }
+        .delete-modal-btns {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        .btn-cancel {
+            background: #333;
+            color: #ccc;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 8px 20px;
+            cursor: pointer;
+        }
+        .btn-cancel:hover { background: #444; }
+
+        .admin-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            background: rgba(0,255,204,0.1);
+            color: #00ffcc;
+            border: 1px solid rgba(0,255,204,0.2);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .admin-badge:hover {
+            background: rgba(255,80,80,0.1);
+            border-color: rgba(255,80,80,0.3);
+            color: #ff8888;
+        }
+
+        /* 响应式 */
+        @media (max-width: 640px) {
+            .header h1 { font-size: 1.8em; }
+            .top-result .move-name { font-size: 1.5em; }
+            .top-result .confidence-big { font-size: 2em; }
+            .prediction-item .conf-bar-wrap { width: 60px; }
+            .output-files { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- 头部 -->
+    <div class="header">
+        <h1>WOTA艺 技术识别</h1>
+        <div class="subtitle">荧光棒舞蹈 技术判定系统</div>
+        <div class="db-badge {{ 'ready' if db_info.exists else 'empty' }}">
+            {% if db_info.exists %}
+                数据库: {{ db_info.count }} 个技术已录入
+            {% else %}
+                数据库未初始化 — 请先录入标准视频
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 导航 -->
+    <div class="nav-tabs">
+        <div class="nav-tab active" data-panel="recognize" onclick="switchPanel('recognize')">技术识别</div>
+        <div class="nav-tab" data-panel="browse" onclick="switchPanel('browse')">技术总览</div>
+        <div class="nav-tab" data-panel="manage" onclick="switchPanel('manage')">数据库管理</div>
+    </div>
+
+    <!-- Toast -->
+    <div class="success-toast" id="toast"></div>
+
+    <!-- ========== 面板1: 技术识别 ========== -->
+    <div id="panel-recognize" class="panel active">
+
+    <!-- 上传卡片 -->
+    <div class="main-card" id="uploadCard">
+        <div class="section-title">上传视频</div>
+
+        <div class="upload-zone" id="dropZone">
+            <div class="icon">🎬</div>
+            <div class="text">点击 或 拖拽视频到此处</div>
+            <div class="hint">MP4, AVI, MOV, MKV, WebM — 最大 200MB</div>
+            <input type="file" id="fileInput" accept="video/*">
+        </div>
+
+        <div class="file-info" id="fileInfo">
+            <span style="font-size:1.3em;">📁</span>
+            <span class="name" id="fileName"></span>
+            <span class="size" id="fileSize"></span>
+            <span style="cursor:pointer;color:#ff6666;" onclick="clearFile()">✕</span>
+        </div>
+
+        <div class="color-options" id="colorOptions">
+            <span style="color:#888;font-size:0.85em;line-height:2;">光棒颜色:</span>
+            <span class="color-chip active" data-color="orange">橙色</span>
+            <span class="color-chip" data-color="blue">蓝色</span>
+            <span class="color-chip" data-color="red">红色</span>
+            <span class="color-chip" data-color="pink">粉色</span>
+            <span class="color-chip" data-color="green">绿色</span>
+            <span class="color-chip" data-color="white">白色</span>
+            <span class="color-chip" data-color="purple">紫色</span>
+        </div>
+
+        <div class="action-row">
+            <button class="btn btn-primary" id="submitBtn" onclick="startUpload()">
+                ▶ 开始识别
+            </button>
+        </div>
+
+        <div class="progress-section" id="progressSection">
+            <div class="progress-bar-wrap">
+                <div class="progress-bar-fill" id="progressBar"></div>
+            </div>
+            <div class="progress-text" id="progressText">准备中...</div>
+        </div>
+
+        <div class="error-box" id="errorBox"></div>
+    </div>
+
+    <!-- 结果卡片 -->
+    <div class="main-card result-section" id="resultCard">
+        <div class="section-title">识别结果</div>
+        <div class="top-result" id="topResult"></div>
+        <div class="prediction-list" id="predictionList"></div>
+        <div class="output-files" id="outputFiles"></div>
+        <div class="action-row" style="margin-top:24px;">
+            <button class="btn btn-retry" onclick="resetAll()">↺ 重新上传</button>
+        </div>
+    </div>
+
+    </div>
+    <!-- ========== /面板1 ========== -->
+
+    <!-- ========== 面板2: 技术总览 ========== -->
+    <div id="panel-browse" class="panel">
+
+    <div class="main-card" id="moveListCard">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+            已录入技术
+            <span style="font-size:0.8em;color:#888;" id="moveCount">0 个</span>
+        </div>
+        <input class="form-input" type="text" id="moveSearchInput" placeholder="搜索技术（支持中文名 / 日语名）"
+               style="width:100%;margin-bottom:12px;" oninput="filterMoves()">
+        <div class="empty-state" id="emptyState">还没有录入任何技术，请前往「数据库管理」添加</div>
+        <table class="move-table" id="moveTable" style="display:none;">
+            <thead>
+                <tr><th>中文名</th><th>日语名</th><th>B站</th><th id="browseActionHead" style="display:none;">操作</th></tr>
+            </thead>
+            <tbody id="moveTableBody"></tbody>
+        </table>
+    </div>
+
+    </div>
+    <!-- ========== /面板2 ========== -->
+
+    <!-- ========== 面板3: 数据库管理 ========== -->
+    <div id="panel-manage" class="panel">
+
+    <!-- 未登录时显示登录表单 -->
+    <div class="login-card" id="loginCard">
+        <h3>管理员登录</h3>
+        <div class="hint">登录后可录入 / 删除技术</div>
+        <input class="form-input" type="password" id="loginPassword" placeholder="请输入管理员密码"
+               onkeydown="if(event.key==='Enter')adminLogin()">
+        <button class="btn btn-primary" onclick="adminLogin()">登录</button>
+        <div class="login-error" id="loginError">密码错误，请重试</div>
+    </div>
+
+    <!-- 登录成功后显示管理内容 -->
+    <div id="manageContent" style="display:none;">
+
+    <div class="main-card">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+            录入新技术
+            <span class="admin-badge" onclick="adminLogout()" title="退出登录">🔒 已登录 · 退出</span>
+        </div>
+
+        <div class="upload-zone" id="dropZoneManage">
+            <div class="icon">📤</div>
+            <div class="text">点击 或 拖拽标准视频到此处</div>
+            <div class="hint">上传已知技术的视频作为比对标准</div>
+            <input type="file" id="fileInputManage" accept="video/*">
+        </div>
+
+        <div class="file-info" id="fileInfoManage">
+            <span style="font-size:1.3em;">📁</span>
+            <span class="name" id="fileNameManage"></span>
+            <span class="size" id="fileSizeManage"></span>
+            <span style="cursor:pointer;color:#ff6666;" onclick="clearFileManage()">✕</span>
+        </div>
+
+        <div class="form-row">
+            <input class="form-input" type="text" id="moveNameInput" placeholder="中文名，如 雷蛇">
+            <input class="form-input" type="text" id="moveJpNameInput" placeholder="日语名，如 サンダースネーク">
+        </div>
+
+        <input class="form-input" type="text" id="moveBilibiliInput" placeholder="B站视频链接或BV号（选填）"
+               style="width:100%;margin-bottom:12px;">
+
+        <div class="color-options" id="colorOptionsManage">
+            <span style="color:#888;font-size:0.85em;line-height:2;">光棒颜色:</span>
+            <span class="color-chip active" data-color="orange">橙色</span>
+            <span class="color-chip" data-color="blue">蓝色</span>
+            <span class="color-chip" data-color="red">红色</span>
+            <span class="color-chip" data-color="pink">粉色</span>
+            <span class="color-chip" data-color="green">绿色</span>
+            <span class="color-chip" data-color="white">白色</span>
+            <span class="color-chip" data-color="purple">紫色</span>
+        </div>
+
+        <div class="action-row">
+            <button class="btn btn-primary" id="submitBtnManage" onclick="addToDb()">
+                ➕ 录入数据库
+            </button>
+        </div>
+
+        <div class="progress-section" id="progressSectionManage">
+            <div class="progress-bar-wrap">
+                <div class="progress-bar-fill" id="progressBarManage"></div>
+            </div>
+            <div class="progress-text" id="progressTextManage">准备中...</div>
+        </div>
+
+        <div class="error-box" id="errorBoxManage"></div>
+    </div>
+
+    </div>
+    <!-- /manageContent -->
+
+    </div>
+    <!-- ========== /面板2 ========== -->
+
+    <div class="footer">
+        WOTA艺 技术识别系统 v0.1 — 光流 + Faiss 向量检索
+    </div>
+</div>
+
+<script>
+    let selectedFile = null;
+    let selectedColors = ['orange'];
+    let pollTimer = null;
+
+    // ---------- 拖放 ----------
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) handleFile(fileInput.files[0]);
+    });
+
+    function handleFile(file) {
+        if (!file.type.startsWith('video/')) {
+            alert('请选择视频文件');
+            return;
+        }
+        selectedFile = file;
+        document.getElementById('fileName').textContent = file.name;
+        document.getElementById('fileSize').textContent = formatSize(file.size);
+        document.getElementById('fileInfo').classList.add('show');
+    }
+
+    function clearFile() {
+        selectedFile = null;
+        fileInput.value = '';
+        document.getElementById('fileInfo').classList.remove('show');
+    }
+
+    function formatSize(bytes) {
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    // ---------- 颜色选择 ----------
+    document.querySelectorAll('#colorOptions .color-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            chip.classList.toggle('active');
+            updateSelectedColors();
+        });
+    });
+
+    function updateSelectedColors() {
+        selectedColors = [];
+        document.querySelectorAll('.color-chip.active').forEach(c => selectedColors.push(c.dataset.color));
+        if (selectedColors.length === 0) {
+            document.querySelector('.color-chip[data-color="white"]').classList.add('active');
+            selectedColors = ['bright'];
+        }
+    }
+
+    // ---------- 上传 ----------
+    function startUpload() {
+        if (!selectedFile) {
+            alert('请先选择视频文件');
+            return;
+        }
+
+        document.getElementById('submitBtn').disabled = true;
+        document.getElementById('progressSection').classList.add('show');
+        document.getElementById('errorBox').classList.remove('show');
+        document.getElementById('resultCard').classList.remove('show');
+        updateProgress(0, '上传中...');
+
+        const formData = new FormData();
+        formData.append('video', selectedFile);
+        formData.append('colors', selectedColors.join(','));
+
+        fetch('/api/upload', { method: 'POST', body: formData })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                updateProgress(5, '开始处理...');
+                pollTask(data.task_id);
+            })
+            .catch(err => {
+                showError('上传失败: ' + err.message);
+            });
+    }
+
+    function pollTask(taskId) {
+        pollTimer = setInterval(() => {
+            fetch('/api/task/' + taskId)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'processing') {
+                        updateProgress(data.progress, 'AI分析中... ' + data.progress + '%');
+                    } else if (data.status === 'done') {
+                        clearInterval(pollTimer);
+                        updateProgress(100, '完成！');
+                        showResult(data.result);
+                    } else if (data.status === 'error') {
+                        clearInterval(pollTimer);
+                        showError('处理出错: ' + (data.error || '未知错误'));
+                    }
+                })
+                .catch(err => {
+                    clearInterval(pollTimer);
+                    showError('通信失败: ' + err.message);
+                });
+        }, 1500);
+    }
+
+    function updateProgress(pct, text) {
+        document.getElementById('progressBar').style.width = pct + '%';
+        document.getElementById('progressText').textContent = text;
+    }
+
+    function showError(msg) {
+        document.getElementById('submitBtn').disabled = false;
+        document.getElementById('progressSection').classList.remove('show');
+        const box = document.getElementById('errorBox');
+        box.textContent = msg;
+        box.classList.add('show');
+    }
+
+    // ---------- 结果展示 ----------
+    function showResult(result) {
+        document.getElementById('submitBtn').disabled = false;
+        document.getElementById('progressSection').classList.remove('show');
+        document.getElementById('resultCard').classList.add('show');
+
+        // 顶部结果
+        const top = document.getElementById('topResult');
+        if (result.predictions.length > 0) {
+            top.innerHTML = `
+                <div class="label">识别结果</div>
+                <div class="move-name">${escapeHtml(result.top_match)}</div>
+                <div class="confidence-big">${result.top_confidence}%</div>
+                <div class="label">置信度</div>
+            `;
+        } else {
+            top.innerHTML = `
+                <div class="move-name" style="color:#888;">未识别</div>
+                <div class="label">数据库中未找到匹配的技术</div>
+            `;
+        }
+
+        // 候选列表
+        const list = document.getElementById('predictionList');
+        list.innerHTML = result.predictions.map((p, i) => `
+            <div class="prediction-item ${i === 0 ? 'best' : ''}">
+                <div class="rank">#${i + 1}</div>
+                <div class="info">
+                    <div class="name">${escapeHtml(p.move_name)}</div>
+                    <div class="cat">${escapeHtml(p.category) || ''}</div>
+                </div>
+                <div class="confidence-col">
+                    <div class="conf-num">${p.confidence}%</div>
+                    <div class="conf-bar-wrap">
+                        <div class="conf-bar-fill" style="width:${p.confidence}%"></div>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+
+        // 输出文件
+        const files = document.getElementById('outputFiles');
+        const of = result.output_files;
+        const videoSrc = of.centroid_video || of.optical_flow_video;
+        const videoLabel = of.centroid_video ? '质心追踪' : '光流视频';
+        files.innerHTML = `
+            <div class="output-card">
+                <div class="img-wrap"><img src="${of.trajectories}" alt="轨迹"></div>
+                <div class="label-row">轨迹追踪</div>
+            </div>
+            <div class="output-card">
+                <div class="img-wrap"><img src="${of.light_arc}" alt="光弧"></div>
+                <div class="label-row">光弧叠加</div>
+            </div>
+            ${videoSrc ? `
+            <div class="output-card">
+                <div class="img-wrap">
+                    <video controls><source src="${videoSrc}" type="video/mp4"></video>
+                </div>
+                <div class="label-row">${videoLabel}</div>
+            </div>
+            ` : ''}
+        `;
+
+        // 滚动到结果
+        document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function resetAll() {
+        clearFile();
+        document.getElementById('resultCard').classList.remove('show');
+        document.getElementById('errorBox').classList.remove('show');
+        document.getElementById('progressSection').classList.remove('show');
+        document.getElementById('submitBtn').disabled = false;
+        if (pollTimer) clearInterval(pollTimer);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // ================================================================
+    // 面板切换
+    // ================================================================
+    function switchPanel(name) {
+        document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+        document.querySelector(`.nav-tab[data-panel="${name}"]`).classList.add('active');
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        document.getElementById('panel-' + name).classList.add('active');
+        if (name === 'browse') refreshMoveList();
+        if (name === 'manage') checkAuthAndRender();
+    }
+
+    // ================================================================
+    // 管理员认证
+    // ================================================================
+    let _adminToken = localStorage.getItem('wota_admin_token') || '';
+
+    function getAdminToken() {
+        return _adminToken;
+    }
+
+    function adminFetch(url, options = {}) {
+        const opts = { ...options };
+        if (_adminToken) {
+            opts.headers = { ...(opts.headers || {}), 'X-Admin-Token': _adminToken };
+        }
+        return fetch(url, opts);
+    }
+
+    function adminLogin() {
+        const password = document.getElementById('loginPassword').value;
+        if (!password) {
+            document.getElementById('loginError').style.display = 'block';
+            return;
+        }
+        fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    _adminToken = data.token;
+                    localStorage.setItem('wota_admin_token', _adminToken);
+                    document.getElementById('loginCard').style.display = 'none';
+                    document.getElementById('manageContent').style.display = '';
+                    document.getElementById('loginPassword').value = '';
+                    document.getElementById('loginError').style.display = 'none';
+                    filterMoves();
+                } else {
+                    document.getElementById('loginError').style.display = 'block';
+                }
+            });
+    }
+
+    function adminLogout() {
+        _adminToken = '';
+        localStorage.removeItem('wota_admin_token');
+        document.getElementById('loginCard').style.display = '';
+        document.getElementById('manageContent').style.display = 'none';
+        showToast('已退出登录');
+        filterMoves();
+    }
+
+    function checkAuthAndRender() {
+        if (_adminToken) {
+            adminFetch('/api/auth/check')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.valid) {
+                        document.getElementById('loginCard').style.display = 'none';
+                        document.getElementById('manageContent').style.display = '';
+                        filterMoves();
+                    } else {
+                        adminLogout();
+                    }
+                })
+                .catch(() => {});
+        } else {
+            document.getElementById('loginCard').style.display = '';
+            document.getElementById('manageContent').style.display = 'none';
+        }
+    }
+
+    // ================================================================
+    // 数据库管理 - 拖放
+    // ================================================================
+    let selectedFileManage = null;
+    let selectedColorsManage = ['orange'];
+
+    const dropZoneManage = document.getElementById('dropZoneManage');
+    const fileInputManage = document.getElementById('fileInputManage');
+
+    dropZoneManage.addEventListener('click', () => fileInputManage.click());
+    dropZoneManage.addEventListener('dragover', e => { e.preventDefault(); dropZoneManage.classList.add('drag-over'); });
+    dropZoneManage.addEventListener('dragleave', () => dropZoneManage.classList.remove('drag-over'));
+    dropZoneManage.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZoneManage.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) handleFileManage(e.dataTransfer.files[0]);
+    });
+    fileInputManage.addEventListener('change', () => {
+        if (fileInputManage.files.length) handleFileManage(fileInputManage.files[0]);
+    });
+
+    function handleFileManage(file) {
+        if (!file.type.startsWith('video/')) {
+            alert('请选择视频文件');
+            return;
+        }
+        selectedFileManage = file;
+        document.getElementById('fileNameManage').textContent = file.name;
+        document.getElementById('fileSizeManage').textContent = formatSize(file.size);
+        document.getElementById('fileInfoManage').classList.add('show');
+    }
+
+    function clearFileManage() {
+        selectedFileManage = null;
+        fileInputManage.value = '';
+        document.getElementById('fileInfoManage').classList.remove('show');
+    }
+
+    // 数据库管理 - 颜色选择
+    document.querySelectorAll('#colorOptionsManage .color-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            chip.classList.toggle('active');
+            updateColorsManage();
+        });
+    });
+
+    function updateColorsManage() {
+        selectedColorsManage = [];
+        document.querySelectorAll('#colorOptionsManage .color-chip.active')
+            .forEach(c => selectedColorsManage.push(c.dataset.color));
+        if (selectedColorsManage.length === 0) {
+            document.querySelector('#colorOptionsManage .color-chip[data-color="white"]').classList.add('active');
+            selectedColorsManage = ['bright'];
+        }
+    }
+
+    // ================================================================
+    // 数据库管理 - 入库
+    // ================================================================
+    function addToDb() {
+        if (!selectedFileManage) {
+            alert('请先选择标准视频文件');
+            return;
+        }
+        const name = document.getElementById('moveNameInput').value.trim();
+        if (!name) {
+            alert('请输入中文名');
+            return;
+        }
+        const jpName = document.getElementById('moveJpNameInput').value.trim();
+
+        const btn = document.getElementById('submitBtnManage');
+        btn.disabled = true;
+        document.getElementById('progressSectionManage').classList.add('show');
+        document.getElementById('errorBoxManage').classList.remove('show');
+        updateProgressManage(10, '正在提取光流特征...');
+
+        const formData = new FormData();
+        formData.append('video', selectedFileManage);
+        formData.append('name', name);
+        formData.append('category', jpName);
+        formData.append('colors', selectedColorsManage.join(','));
+        formData.append('bilibili', document.getElementById('moveBilibiliInput').value.trim());
+
+        adminFetch('/api/db/add', { method: 'POST', body: formData })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                document.getElementById('progressSectionManage').classList.remove('show');
+                if (data.error) {
+                    document.getElementById('errorBoxManage').textContent = data.error;
+                    document.getElementById('errorBoxManage').classList.add('show');
+                    return;
+                }
+                updateProgressManage(100, '入库完成！');
+                showToast(`"${data.move_name}" 已成功录入！`);
+                clearFileManage();
+                document.getElementById('moveNameInput').value = '';
+                document.getElementById('moveJpNameInput').value = '';
+                document.getElementById('moveBilibiliInput').value = '';
+                refreshMoveList();
+                // 更新顶部徽章
+                updateDbBadge(data.total_count);
+            })
+            .catch(err => {
+                btn.disabled = false;
+                document.getElementById('progressSectionManage').classList.remove('show');
+                document.getElementById('errorBoxManage').textContent = '入库失败: ' + err.message;
+                document.getElementById('errorBoxManage').classList.add('show');
+            });
+    }
+
+    function updateProgressManage(pct, text) {
+        document.getElementById('progressBarManage').style.width = pct + '%';
+        document.getElementById('progressTextManage').textContent = text;
+    }
+
+    // ================================================================
+    // 数据库管理 - 列表 & 删除 & 搜索
+    // ================================================================
+    let _allMoves = [];
+
+    function refreshMoveList() {
+        adminFetch('/api/db/info')
+            .then(r => r.json())
+            .then(data => {
+                _allMoves = (data.moves || []).slice();
+                document.getElementById('moveCount').textContent = data.count + ' 个';
+                updateDbBadge(data.count);
+
+                if (!data.exists || data.count === 0) {
+                    document.getElementById('moveTable').style.display = 'none';
+                    document.getElementById('emptyState').style.display = '';
+                    document.getElementById('moveSearchInput').style.display = 'none';
+                    return;
+                }
+                document.getElementById('moveSearchInput').style.display = '';
+                filterMoves();
+            });
+    }
+
+    function filterMoves() {
+        const keyword = (document.getElementById('moveSearchInput').value || '').trim().toLowerCase();
+        let filtered = _allMoves;
+        if (keyword) {
+            filtered = _allMoves.filter(m =>
+                (m.move_name || '').toLowerCase().includes(keyword) ||
+                (m.category || '').toLowerCase().includes(keyword)
+            );
+        }
+
+        const tbody = document.getElementById('moveTableBody');
+        const table = document.getElementById('moveTable');
+        const empty = document.getElementById('emptyState');
+
+        if (filtered.length === 0 && _allMoves.length > 0) {
+            table.style.display = 'none';
+            empty.style.display = '';
+            empty.textContent = '没有匹配的技术';
+        } else if (filtered.length === 0) {
+            table.style.display = 'none';
+            empty.style.display = '';
+            empty.textContent = '还没有录入任何技术，请前往「数据库管理」添加';
+        } else {
+            table.style.display = '';
+            empty.style.display = 'none';
+            tbody.innerHTML = filtered.map(m => {
+                let bili = '';
+                if (m.bilibili) {
+                    // 自动补全为完整链接
+                    let url = m.bilibili;
+                    if (!url.startsWith('http')) {
+                        url = 'https://www.bilibili.com/video/' + url;
+                    }
+                    bili = `<a href="${url}" target="_blank" rel="noopener" style="color:#fb7299;">观看</a>`;
+                } else {
+                    bili = '—';
+                }
+                let actionCol = '';
+                if (_adminToken) {
+                    actionCol = `<td><button class="btn-sm" onclick="deleteMoveBrowse('${m.move_id}','${escapeHtml(m.move_name)}')">删除</button></td>`;
+                }
+                return `
+                <tr>
+                    <td>${escapeHtml(m.move_name)}</td>
+                    <td>${escapeHtml(m.category) || '—'}</td>
+                    <td>${bili}</td>
+                    ${actionCol}
+                </tr>
+            `}).join('');
+        }
+
+        // 有管理员权限时显示操作列
+        document.getElementById('browseActionHead').style.display = _adminToken ? '' : 'none';
+    }
+
+    function deleteMove(moveId) {
+        if (!confirm('确定要删除该技术吗？')) return;
+        adminFetch('/api/db/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ move_id: moveId }),
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('已删除');
+                    refreshMoveList();
+                    updateDbBadge(data.total_count);
+                } else {
+                    alert('删除失败: ' + (data.error || '未知'));
+                }
+            });
+    }
+
+    function deleteMoveBrowse(moveId, moveName) {
+        // 弹出自定义对话框，要求输入管理员密码
+        const modal = document.createElement('div');
+        modal.className = 'delete-modal-overlay';
+        modal.innerHTML = `
+            <div class="delete-modal">
+                <h3>确认删除</h3>
+                <p style="margin:8px 0 16px;color:#ccc;">你确定要删除 <b style="color:#fb7299;">${escapeHtml(moveName)}</b> 吗？</p>
+                <input class="form-input" type="password" id="deletePwdInput" placeholder="请输入管理员密码"
+                       style="width:100%;margin-bottom:12px;"
+                       onkeydown="if(event.key==='Enter')confirmDeleteBrowse('${moveId}')">
+                <div class="delete-modal-btns">
+                    <button class="btn btn-cancel" onclick="closeDeleteModal()">取消</button>
+                    <button class="btn btn-primary" id="deleteConfirmBtn" onclick="confirmDeleteBrowse('${moveId}')">确认删除</button>
+                </div>
+                <div class="login-error" id="deletePwdError" style="margin-top:8px;">密码错误，请重试</div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        setTimeout(() => document.getElementById('deletePwdInput').focus(), 100);
+    }
+
+    function closeDeleteModal() {
+        const modal = document.querySelector('.delete-modal-overlay');
+        if (modal) modal.remove();
+    }
+
+    async function confirmDeleteBrowse(moveId) {
+        const pwd = document.getElementById('deletePwdInput').value;
+        const btn = document.getElementById('deleteConfirmBtn');
+        const err = document.getElementById('deletePwdError');
+
+        if (!pwd) {
+            err.style.display = '';
+            err.textContent = '请输入密码';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = '验证中...';
+
+        try {
+            const resp = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pwd }),
+            });
+            const data = await resp.json();
+
+            if (data.success) {
+                // 登录成功，保存 token
+                _adminToken = data.token;
+                localStorage.setItem('wota_admin_token', _adminToken);
+                closeDeleteModal();
+
+                // 确认后再删
+                const delResp = await adminFetch('/api/db/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ move_id: moveId }),
+                });
+                const delData = await delResp.json();
+                if (delData.success) {
+                    showToast('已删除');
+                    refreshMoveList();
+                    updateDbBadge(delData.total_count);
+                } else {
+                    alert('删除失败: ' + (delData.error || '未知'));
+                }
+            } else {
+                err.style.display = '';
+                err.textContent = '密码错误，请重试';
+                btn.disabled = false;
+                btn.textContent = '确认删除';
+            }
+        } catch (e) {
+            err.style.display = '';
+            err.textContent = '通信失败，请检查网络';
+            btn.disabled = false;
+            btn.textContent = '确认删除';
+        }
+    }
+
+    // ================================================================
+    // 工具函数
+    // ================================================================
+    function updateDbBadge(count) {
+        const badge = document.querySelector('.db-badge');
+        if (count > 0) {
+            badge.className = 'db-badge ready';
+            badge.textContent = '数据库: ' + count + ' 个技术已录入';
+        } else {
+            badge.className = 'db-badge empty';
+            badge.textContent = '数据库未初始化 — 请先录入标准视频';
+        }
+    }
+
+    function showToast(msg) {
+        const toast = document.getElementById('toast');
+        toast.textContent = msg;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+</script>
+
+</body>
+</html>

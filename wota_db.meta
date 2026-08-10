@@ -1,0 +1,8 @@
+{
+  "dim": 512,
+  "index_type": "auto",
+  "nlist": 100,
+  "next_faiss_id": 7,
+  "records": [],
+  "id_to_faiss_int": {}
+}
