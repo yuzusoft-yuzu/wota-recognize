@@ -1192,7 +1192,7 @@
         btn.disabled = true;
         document.getElementById('progressSectionManage').classList.add('show');
         document.getElementById('errorBoxManage').classList.remove('show');
-        updateProgressManage(10, '正在提取光流特征...');
+        updateProgressManage(10, '正在上传视频...');
 
         const formData = new FormData();
         formData.append('video', selectedFileManage);
@@ -1204,22 +1204,14 @@
         adminFetch('/api/db/add', { method: 'POST', body: formData })
             .then(r => r.json())
             .then(data => {
-                btn.disabled = false;
-                document.getElementById('progressSectionManage').classList.remove('show');
                 if (data.error) {
+                    btn.disabled = false;
+                    document.getElementById('progressSectionManage').classList.remove('show');
                     document.getElementById('errorBoxManage').textContent = data.error;
                     document.getElementById('errorBoxManage').classList.add('show');
                     return;
                 }
-                updateProgressManage(100, '入库完成！');
-                showToast(`"${data.move_name}" 已成功录入！`);
-                clearFileManage();
-                document.getElementById('moveNameInput').value = '';
-                document.getElementById('moveJpNameInput').value = '';
-                document.getElementById('moveBilibiliInput').value = '';
-                refreshMoveList();
-                // 更新顶部徽章
-                updateDbBadge(data.total_count);
+                pollDbAddStatus(data.task_id, btn);
             })
             .catch(err => {
                 btn.disabled = false;
@@ -1227,6 +1219,51 @@
                 document.getElementById('errorBoxManage').textContent = '入库失败: ' + err.message;
                 document.getElementById('errorBoxManage').classList.add('show');
             });
+    }
+
+    function pollDbAddStatus(taskId, btn) {
+        updateProgressManage(20, '正在提取光流特征...');
+        const interval = setInterval(() => {
+            adminFetch('/api/db/add/status/' + taskId)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error && !data.status) {
+                        clearInterval(interval);
+                        btn.disabled = false;
+                        document.getElementById('progressSectionManage').classList.remove('show');
+                        document.getElementById('errorBoxManage').textContent = data.error;
+                        document.getElementById('errorBoxManage').classList.add('show');
+                        return;
+                    }
+                    updateProgressManage(data.progress, data.status === 'done' ? '入库完成！' : '正在处理...');
+                    if (data.status === 'done') {
+                        clearInterval(interval);
+                        btn.disabled = false;
+                        document.getElementById('progressSectionManage').classList.remove('show');
+                        const result = data.result;
+                        showToast(`"${result.move_name}" 已成功录入！`);
+                        clearFileManage();
+                        document.getElementById('moveNameInput').value = '';
+                        document.getElementById('moveJpNameInput').value = '';
+                        document.getElementById('moveBilibiliInput').value = '';
+                        refreshMoveList();
+                        updateDbBadge(result.total_count);
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        btn.disabled = false;
+                        document.getElementById('progressSectionManage').classList.remove('show');
+                        document.getElementById('errorBoxManage').textContent = '入库失败: ' + data.error;
+                        document.getElementById('errorBoxManage').classList.add('show');
+                    }
+                })
+                .catch(err => {
+                    clearInterval(interval);
+                    btn.disabled = false;
+                    document.getElementById('progressSectionManage').classList.remove('show');
+                    document.getElementById('errorBoxManage').textContent = '入库失败: ' + err.message;
+                    document.getElementById('errorBoxManage').classList.add('show');
+                });
+        }, 2000);
     }
 
     function updateProgressManage(pct, text) {

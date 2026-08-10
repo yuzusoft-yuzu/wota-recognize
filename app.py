@@ -73,6 +73,7 @@ def api_auth_check():
 
 # 全局任务状态（简单内存存储）
 TASKS: dict = {}
+DB_TASKS: dict = {}
 
 
 # ===================================================================
@@ -186,8 +187,57 @@ def process_video(task_id: str, video_path: str, colors: list[str]):
         TASKS[task_id]["error"] = str(e)
 
 
-# ===================================================================
-# 页面路由
+def process_db_add(task_id: str, video_path: str, name: str, category: str,
+                   colors: list[str], bilibili: str, source_filename: str):
+    """后台入库处理：光流提取 → 向量入库 → 保存数据库"""
+    try:
+        DB_TASKS[task_id]["status"] = "processing"
+        DB_TASKS[task_id]["progress"] = 20
+
+        output_dir = os.path.join(app.config["OUTPUT_FOLDER"], "std_" + task_id)
+        pipeline = WotaOpticalFlowPipeline(
+            video_path=video_path,
+            method="farneback",
+            color_presets=colors,
+            mode="light_tracking",
+        )
+        DB_TASKS[task_id]["progress"] = 40
+        pipeline.run(step=1, max_frames=300, output_dir=output_dir)
+        DB_TASKS[task_id]["progress"] = 70
+        raw_vector = pipeline.get_embedding_snapshot(normalize=True)
+
+        db = get_db()
+        if db is None:
+            db = WotaVectorDB(dim=512)
+        if db.dim > len(raw_vector):
+            projector = FeatureProjector(input_dim=len(raw_vector), output_dim=db.dim)
+            vec = projector.project(raw_vector)
+        else:
+            vec = raw_vector.astype(np.float32)
+
+        record = MoveRecord(
+            move_name=name,
+            category=category,
+            source_video=source_filename,
+            bilibili=bilibili,
+            vector=vec,
+        )
+        mid = db.insert(record)
+        db.save(app.config["DB_PATH"])
+
+        DB_TASKS[task_id]["progress"] = 100
+        DB_TASKS[task_id]["status"] = "done"
+        DB_TASKS[task_id]["result"] = {
+            "success": True,
+            "move_id": mid,
+            "move_name": name,
+            "category": category,
+            "total_count": db.count(),
+        }
+
+    except Exception as e:
+        DB_TASKS[task_id]["status"] = "error"
+        DB_TASKS[task_id]["error"] = str(e)
 # ===================================================================
 @app.route("/")
 def index():
@@ -305,18 +355,12 @@ def api_db_info():
 @app.route("/api/db/add", methods=["POST"])
 def api_db_add():
     """
-    Web 端入库标准视频。【需要管理员权限】
+    Web 端入库标准视频（异步）。【需要管理员权限】
+    返回 task_id，前端轮询 /api/db/add/status/<task_id> 获取进度。
     """
     if not _check_admin_auth(request):
         return jsonify({"error": "需要管理员权限，请先登录"}), 403
 
-    """
-    POST multipart/form-data
-      - video: 标准视频文件
-      - name: 技术名称
-      - category: 技术分类
-      - colors: 光棒颜色（逗号分隔）
-    """
     if "video" not in request.files:
         return jsonify({"error": "请上传标准视频"}), 400
 
@@ -329,6 +373,12 @@ def api_db_add():
     if file.filename == "":
         return jsonify({"error": "文件名为空"}), 400
 
+    # 依赖检查
+    for dep, msg in [("opencv-python", "opencv-python"), ("numpy", "numpy"),
+                     ("scipy", "scipy"), ("faiss", "faiss-cpu")]:
+        if dep in " ".join(_MISSING_DEPS):
+            return jsonify({"error": f"缺少 {msg}"}), 500
+
     colors_raw = request.form.get("colors", "white")
     colors = [c.strip() for c in colors_raw.split(",") if c.strip()]
     bilibili = request.form.get("bilibili", "").strip()
@@ -337,62 +387,50 @@ def api_db_add():
     ext = Path(file.filename).suffix.lower()
     if ext not in (".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"):
         ext = ".mp4"
-    file_id = uuid.uuid4().hex[:8]
-    safe_name = f"std_{file_id}{ext}"
+    task_id = uuid.uuid4().hex[:8]
+    safe_name = f"std_{task_id}{ext}"
     video_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
     file.save(video_path)
 
-    try:
-        # 光流提取
-        if "opencv-python" in " ".join(_MISSING_DEPS):
-            return jsonify({"error": "缺少 opencv-python，请先运行: pip install opencv-python"}), 500
-        if "numpy" in " ".join(_MISSING_DEPS):
-            return jsonify({"error": "缺少 numpy，请先运行: pip install numpy"}), 500
-        if "scipy" in " ".join(_MISSING_DEPS):
-            return jsonify({"error": "缺少 scipy，请先运行: pip install scipy"}), 500
-        if "faiss" in " ".join(_MISSING_DEPS):
-            return jsonify({"error": "缺少 faiss-cpu，请先运行: pip install faiss-cpu"}), 500
+    # 启动后台任务
+    DB_TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "queued",
+        "progress": 5,
+        "move_name": name,
+        "created_at": datetime.now().isoformat(),
+    }
 
-        output_dir = os.path.join(app.config["OUTPUT_FOLDER"], "std_" + file_id)
-        pipeline = WotaOpticalFlowPipeline(
-            video_path=video_path,
-            method="farneback",
-            color_presets=colors,
-            mode="light_tracking",
-        )
-        pipeline.run(step=1, max_frames=300, output_dir=output_dir)
-        raw_vector = pipeline.get_embedding_snapshot(normalize=True)
+    thread = threading.Thread(
+        target=process_db_add,
+        args=(task_id, video_path, name, category, colors, bilibili, file.filename),
+        daemon=True,
+    )
+    thread.start()
 
-        # 入库
-        db = get_db()
-        if db is None:
-            db = WotaVectorDB(dim=512)
-        if db.dim > len(raw_vector):
-            projector = FeatureProjector(input_dim=len(raw_vector), output_dim=db.dim)
-            vec = projector.project(raw_vector)
-        else:
-            vec = raw_vector.astype(np.float32)
+    return jsonify({"task_id": task_id, "status": "queued"})
 
-        record = MoveRecord(
-            move_name=name,
-            category=category,
-            source_video=file.filename,
-            bilibili=bilibili,
-            vector=vec,
-        )
-        mid = db.insert(record)
-        db.save(app.config["DB_PATH"])
 
-        return jsonify({
-            "success": True,
-            "move_id": mid,
-            "move_name": name,
-            "category": category,
-            "total_count": db.count(),
-        })
+@app.route("/api/db/add/status/<task_id>")
+def api_db_add_status(task_id: str):
+    """查询入库任务状态。【需要管理员权限】"""
+    if not _check_admin_auth(request):
+        return jsonify({"error": "需要管理员权限"}), 403
+    task = DB_TASKS.get(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
 
-    except Exception as e:
-        return jsonify({"error": f"入库失败: {str(e)}"}), 500
+    resp = {
+        "task_id": task["task_id"],
+        "status": task["status"],
+        "progress": task["progress"],
+        "move_name": task.get("move_name", ""),
+    }
+    if task["status"] == "done":
+        resp["result"] = task["result"]
+    elif task["status"] == "error":
+        resp["error"] = task.get("error", "未知错误")
+    return jsonify(resp)
 
 
 @app.route("/api/db/delete", methods=["POST"])
