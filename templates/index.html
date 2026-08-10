@@ -883,6 +883,22 @@
     // ---------- 分片上传工具 ----------
     const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
 
+    // 单个分片上传（带重试）
+    function uploadOneChunk(f, formData, retries = 3) {
+        let attempt = 0;
+        const tryOnce = () => f('/api/upload/chunk', { method: 'POST', body: formData })
+            .then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            });
+        const loop = () => tryOnce().catch(err => {
+            attempt++;
+            if (attempt > retries) throw err;
+            return new Promise(res => setTimeout(res, 1000)).then(loop);
+        });
+        return loop();
+    }
+
     function chunkUpload(file, onProgress, fetcher) {
         const f = fetcher || fetch;
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -900,24 +916,26 @@
         .then(initData => {
             if (initData.error) throw new Error(initData.error);
             const uploadId = initData.upload_id;
-            const uploadPromises = [];
+
+            // 串行上传：一个分片传完再传下一个，避免并发压垮代理
+            let chain = Promise.resolve();
             for (let i = 0; i < totalChunks; i++) {
                 const start = i * CHUNK_SIZE;
                 const end = Math.min(start + CHUNK_SIZE, file.size);
                 const blob = file.slice(start, end);
-                const formData = new FormData();
-                formData.append('upload_id', uploadId);
-                formData.append('chunk_index', i);
-                formData.append('chunk', blob);
-                const p = f('/api/upload/chunk', { method: 'POST', body: formData })
-                    .then(r => r.json())
-                    .then(() => {
-                        const pct = Math.round((i + 1) / totalChunks * 90);
-                        onProgress(pct, `正在上传分片 ${i + 1}/${totalChunks}...`);
+                const chunkIndex = i;
+                chain = chain.then(() => {
+                    const formData = new FormData();
+                    formData.append('upload_id', uploadId);
+                    formData.append('chunk_index', chunkIndex);
+                    formData.append('chunk', blob);
+                    return uploadOneChunk(f, formData).then(() => {
+                        const pct = Math.round((chunkIndex + 1) / totalChunks * 90);
+                        onProgress(pct, `正在上传分片 ${chunkIndex + 1}/${totalChunks}...`);
                     });
-                uploadPromises.push(p);
+                });
             }
-            return Promise.all(uploadPromises).then(() => uploadId);
+            return chain.then(() => uploadId);
         });
     }
 
