@@ -3,7 +3,7 @@ Wota艺 技术识别 - Web 后端
 ==========================
 Flask 服务：接收视频上传 → 光流提取 → 向量检索 → 返回结果
 
-使用延迟加载以降低启动内存开销。
+使用延迟加载以降低启动内存开销，后台预加载避免首次请求超时。
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import uuid
 import json
 import shutil
 import threading
+import importlib.util
 from pathlib import Path
 from datetime import datetime
 
@@ -80,19 +81,62 @@ def _lazy_import_vector_db():
     return _vector_db_module
 
 
-def _check_dep(name: str, import_path: str | None = None) -> bool:
-    """延迟检查依赖是否可用（只检查不导入重模块）"""
+def _check_dep(name: str) -> bool:
+    """轻量级检查依赖是否可用（使用 importlib，不实际加载模块）"""
     if name in _dep_checks:
         return _dep_checks[name]
-    try:
-        if import_path:
-            __import__(import_path)
-        else:
-            __import__(name)
-        _dep_checks[name] = True
-    except ImportError:
-        _dep_checks[name] = False
+    _dep_checks[name] = importlib.util.find_spec(name) is not None
     return _dep_checks[name]
+
+
+def _preload_deps():
+    """后台预加载所有重量级依赖，避免首次请求超时"""
+    try:
+        import cv2
+        _dep_checks["cv2"] = True
+        print("[预加载] cv2 完成")
+    except ImportError:
+        _dep_checks["cv2"] = False
+        print("[预加载] cv2 失败")
+
+    try:
+        import numpy as np
+        _dep_checks["numpy"] = True
+        print("[预加载] numpy 完成")
+    except ImportError:
+        _dep_checks["numpy"] = False
+        print("[预加载] numpy 失败")
+
+    try:
+        import scipy
+        _dep_checks["scipy"] = True
+        print("[预加载] scipy 完成")
+    except ImportError:
+        _dep_checks["scipy"] = False
+        print("[预加载] scipy 失败")
+
+    try:
+        import faiss
+        _dep_checks["faiss"] = True
+        print("[预加载] faiss 完成")
+    except ImportError:
+        _dep_checks["faiss"] = False
+        print("[预加载] faiss 失败")
+
+    # 预热光流模块和数据库模块
+    try:
+        _lazy_import_optical_flow()
+        print("[预加载] optical_flow_wota 完成")
+    except Exception as e:
+        print(f"[预加载] optical_flow_wota 失败: {e}")
+
+    try:
+        _lazy_import_vector_db()
+        print("[预加载] vector_db_wota 完成")
+    except Exception as e:
+        print(f"[预加载] vector_db_wota 失败: {e}")
+
+    print("[预加载] 所有依赖加载完毕")
 
 
 # ===================================================================
@@ -482,8 +526,18 @@ def serve_output(task_id: str, filename: str):
 # ===================================================================
 # 启动
 # ===================================================================
+@app.on_startup
+def _startup():
+    """Gunicorn 启动后后台预加载依赖"""
+    t = threading.Thread(target=_preload_deps, daemon=True)
+    t.start()
+    print("[启动] 后台预加载线程已启动")
+
+
 if __name__ == "__main__":
     print("WOTA 服务启动中（延迟加载模式）...")
+    # 本地开发时立即预加载
+    _preload_deps()
     print(f"健康检查: http://127.0.0.1:5000/api/health")
     print(f"访问 http://127.0.0.1:5000\n")
     port = int(os.environ.get("PORT", 5000))
