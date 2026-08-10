@@ -24,4 +24,4 @@ RUN mkdir -p uploads static/output
 # Hugging Face Spaces 要求监听 7860 端口
 EXPOSE 7860
 
-CMD ["gunicorn", "app:app", "--workers", "2", "--timeout", "300", "-b", "0.0.0.0:7860"]
+CMD ["gunicorn", "app:app", "--workers", "1", "--threads", "4", "--timeout", "300", "-b", "0.0.0.0:7860"]
