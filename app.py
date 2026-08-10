@@ -158,6 +158,7 @@ def get_db():
 # 全局任务状态
 TASKS: dict = {}
 DB_TASKS: dict = {}
+UPLOAD_SESSIONS: dict = {}  # 分片上传会话
 
 
 # ===================================================================
@@ -521,6 +522,154 @@ def serve_output(task_id: str, filename: str):
 
 # ===================================================================
 # 启动
+# ===================================================================
+# 分片上传 API（绕过代理超时限制）
+# ===================================================================
+@app.route("/api/upload/init", methods=["POST"])
+def api_upload_init():
+    """初始化分片上传会话"""
+    data = request.get_json() or {}
+    filename = data.get("filename", "")
+    total_size = data.get("total_size", 0)
+    chunk_size = data.get("chunk_size", 2 * 1024 * 1024)  # 默认 2MB
+    total_chunks = data.get("total_chunks", 0)
+
+    if not filename:
+        return jsonify({"error": "缺少 filename"}), 400
+
+    upload_id = uuid.uuid4().hex[:12]
+    ext = Path(filename).suffix.lower()
+    if ext not in (".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"):
+        ext = ".mp4"
+
+    UPLOAD_SESSIONS[upload_id] = {
+        "upload_id": upload_id,
+        "filename": filename,
+        "total_size": total_size,
+        "chunk_size": chunk_size,
+        "total_chunks": total_chunks,
+        "ext": ext,
+        "chunks_received": set(),
+        "created_at": datetime.now().isoformat(),
+    }
+
+    return jsonify({"upload_id": upload_id, "chunk_size": chunk_size})
+
+
+@app.route("/api/upload/chunk", methods=["POST"])
+def api_upload_chunk():
+    """上传单个分片"""
+    upload_id = request.form.get("upload_id", "")
+    chunk_index = int(request.form.get("chunk_index", 0))
+
+    if upload_id not in UPLOAD_SESSIONS:
+        return jsonify({"error": "上传会话不存在"}), 404
+
+    if "chunk" not in request.files:
+        return jsonify({"error": "缺少 chunk 文件"}), 400
+
+    session = UPLOAD_SESSIONS[upload_id]
+    chunk = request.files["chunk"]
+
+    # 保存分片
+    chunk_dir = os.path.join(app.config["UPLOAD_FOLDER"], f"chunks_{upload_id}")
+    os.makedirs(chunk_dir, exist_ok=True)
+    chunk_path = os.path.join(chunk_dir, f"chunk_{chunk_index:06d}")
+    chunk.save(chunk_path)
+
+    session["chunks_received"].add(chunk_index)
+
+    return jsonify({
+        "upload_id": upload_id,
+        "chunk_index": chunk_index,
+        "received": len(session["chunks_received"]),
+        "total": session["total_chunks"],
+    })
+
+
+@app.route("/api/upload/merge", methods=["POST"])
+def api_upload_merge():
+    """合并所有分片并触发入库/识别"""
+    data = request.get_json() or {}
+    upload_id = data.get("upload_id", "")
+    action = data.get("action", "recognize")  # recognize | db_add
+
+    if upload_id not in UPLOAD_SESSIONS:
+        return jsonify({"error": "上传会话不存在"}), 404
+
+    session = UPLOAD_SESSIONS[upload_id]
+    chunk_dir = os.path.join(app.config["UPLOAD_FOLDER"], f"chunks_{upload_id}")
+
+    # 检查所有分片是否就绪
+    expected = set(range(session["total_chunks"]))
+    received = session["chunks_received"]
+    missing = expected - received
+    if missing:
+        return jsonify({"error": f"还有 {len(missing)} 个分片未上传"}), 400
+
+    # 合并文件
+    ext = session["ext"]
+    safe_name = f"{upload_id}{ext}"
+    video_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
+    with open(video_path, "wb") as out_f:
+        for i in range(session["total_chunks"]):
+            chunk_path = os.path.join(chunk_dir, f"chunk_{i:06d}")
+            with open(chunk_path, "rb") as in_f:
+                shutil.copyfileobj(in_f, out_f)
+
+    # 清理分片
+    shutil.rmtree(chunk_dir, ignore_errors=True)
+    del UPLOAD_SESSIONS[upload_id]
+
+    # 根据 action 触发后续处理
+    if action == "db_add":
+        name = data.get("name", "").strip()
+        category = data.get("category", "").strip()
+        colors_raw = data.get("colors", "white")
+        colors = [c.strip() for c in colors_raw.split(",") if c.strip()]
+        bilibili = data.get("bilibili", "").strip()
+
+        if not _check_admin_auth(request):
+            return jsonify({"error": "需要管理员权限"}), 403
+        if not name:
+            return jsonify({"error": "请输入技术名称"}), 400
+
+        task_id = uuid.uuid4().hex[:8]
+        DB_TASKS[task_id] = {
+            "task_id": task_id,
+            "status": "queued",
+            "progress": 5,
+            "move_name": name,
+            "created_at": datetime.now().isoformat(),
+        }
+        thread = threading.Thread(
+            target=process_db_add,
+            args=(task_id, video_path, name, category, colors, bilibili, session["filename"]),
+            daemon=True,
+        )
+        thread.start()
+        return jsonify({"task_id": task_id, "status": "queued"})
+
+    else:  # recognize
+        colors_raw = data.get("colors", "white")
+        colors = [c.strip() for c in colors_raw.split(",") if c.strip()]
+        task_id = uuid.uuid4().hex[:8]
+        TASKS[task_id] = {
+            "task_id": task_id,
+            "status": "queued",
+            "progress": 0,
+            "video_name": session["filename"],
+            "created_at": datetime.now().isoformat(),
+        }
+        thread = threading.Thread(
+            target=process_video,
+            args=(task_id, video_path, colors),
+            daemon=True,
+        )
+        thread.start()
+        return jsonify({"task_id": task_id, "status": "queued"})
+
+
 # ===================================================================
 if __name__ == "__main__":
     print("WOTA 服务启动中（延迟加载模式）...")

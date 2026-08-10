@@ -880,6 +880,47 @@
         }
     }
 
+    // ---------- 分片上传工具 ----------
+    const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+
+    function chunkUpload(file, onProgress, fetcher) {
+        const f = fetcher || fetch;
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        return f('/api/upload/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: file.name,
+                total_size: file.size,
+                chunk_size: CHUNK_SIZE,
+                total_chunks: totalChunks,
+            }),
+        })
+        .then(r => r.json())
+        .then(initData => {
+            if (initData.error) throw new Error(initData.error);
+            const uploadId = initData.upload_id;
+            const uploadPromises = [];
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, file.size);
+                const blob = file.slice(start, end);
+                const formData = new FormData();
+                formData.append('upload_id', uploadId);
+                formData.append('chunk_index', i);
+                formData.append('chunk', blob);
+                const p = f('/api/upload/chunk', { method: 'POST', body: formData })
+                    .then(r => r.json())
+                    .then(() => {
+                        const pct = Math.round((i + 1) / totalChunks * 90);
+                        onProgress(pct, `正在上传分片 ${i + 1}/${totalChunks}...`);
+                    });
+                uploadPromises.push(p);
+            }
+            return Promise.all(uploadPromises).then(() => uploadId);
+        });
+    }
+
     // ---------- 上传 ----------
     function startUpload() {
         if (!selectedFile) {
@@ -891,25 +932,36 @@
         document.getElementById('progressSection').classList.add('show');
         document.getElementById('errorBox').classList.remove('show');
         document.getElementById('resultCard').classList.remove('show');
-        updateProgress(0, '上传中...');
+        updateProgress(0, '正在初始化上传...');
 
-        const formData = new FormData();
-        formData.append('video', selectedFile);
-        formData.append('colors', selectedColors.join(','));
-
-        fetch('/api/upload', { method: 'POST', body: formData })
-            .then(r => r.json())
-            .then(data => {
-                if (data.error) {
-                    showError(data.error);
-                    return;
-                }
-                updateProgress(5, '开始处理...');
-                pollTask(data.task_id);
-            })
-            .catch(err => {
-                showError('上传失败: ' + err.message);
+        // 使用分片上传
+        chunkUpload(selectedFile, (pct, text) => {
+            updateProgress(pct, text);
+        })
+        .then(uploadId => {
+            updateProgress(92, '正在合并文件...');
+            return fetch('/api/upload/merge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    upload_id: uploadId,
+                    action: 'recognize',
+                    colors: selectedColors.join(','),
+                }),
             });
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                showError(data.error);
+                return;
+            }
+            updateProgress(5, '开始处理...');
+            pollTask(data.task_id);
+        })
+        .catch(err => {
+            showError('上传失败: ' + err.message);
+        });
     }
 
     function pollTask(taskId) {
@@ -1176,14 +1228,10 @@
     // ================================================================
     // 数据库管理 - 入库
     // ================================================================
+
     function addToDb() {
         if (!selectedFileManage) {
             alert('请先选择标准视频文件');
-            return;
-        }
-        // 文件大小检查（Sealos 代理可能限制上传大小）
-        if (selectedFileManage.size > 50 * 1024 * 1024) {
-            alert('视频文件过大（超过 50MB），请压缩后再上传');
             return;
         }
         const name = document.getElementById('moveNameInput').value.trim();
@@ -1197,40 +1245,46 @@
         btn.disabled = true;
         document.getElementById('progressSectionManage').classList.add('show');
         document.getElementById('errorBoxManage').classList.remove('show');
-        updateProgressManage(10, '正在上传视频...');
+        updateProgressManage(5, '正在初始化上传...');
 
-        const formData = new FormData();
-        formData.append('video', selectedFileManage);
-        formData.append('name', name);
-        formData.append('category', jpName);
-        formData.append('colors', selectedColorsManage.join(','));
-        formData.append('bilibili', document.getElementById('moveBilibiliInput').value.trim());
-
-        adminFetch('/api/db/add', { method: 'POST', body: formData })
-            .then(r => {
-                if (!r.ok) {
-                    return r.text().then(text => {
-                        throw new Error('服务器错误(' + r.status + ')，可能是视频过大或代理超时，请尝试 10MB 以内的短视频');
-                    });
-                }
-                return r.json();
-            })
-            .then(data => {
-                if (data.error) {
-                    btn.disabled = false;
-                    document.getElementById('progressSectionManage').classList.remove('show');
-                    document.getElementById('errorBoxManage').textContent = data.error;
-                    document.getElementById('errorBoxManage').classList.add('show');
-                    return;
-                }
-                pollDbAddStatus(data.task_id, btn);
-            })
-            .catch(err => {
+        // 使用分片上传（需要管理员认证）
+        chunkUpload(selectedFileManage, (pct, text) => {
+            updateProgressManage(pct, text);
+        }, adminFetch)
+        .then(uploadId => {
+            // 3. 合并并触发入库
+            updateProgressManage(92, '正在合并文件...');
+            return adminFetch('/api/upload/merge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    upload_id: uploadId,
+                    action: 'db_add',
+                    name: name,
+                    category: jpName,
+                    colors: selectedColorsManage.join(','),
+                    bilibili: document.getElementById('moveBilibiliInput').value.trim(),
+                }),
+            });
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
                 btn.disabled = false;
                 document.getElementById('progressSectionManage').classList.remove('show');
-                document.getElementById('errorBoxManage').textContent = '入库失败: ' + err.message;
+                document.getElementById('errorBoxManage').textContent = data.error;
                 document.getElementById('errorBoxManage').classList.add('show');
-            });
+                return;
+            }
+            updateProgressManage(100, '上传完成，开始处理...');
+            pollDbAddStatus(data.task_id, btn);
+        })
+        .catch(err => {
+            btn.disabled = false;
+            document.getElementById('progressSectionManage').classList.remove('show');
+            document.getElementById('errorBoxManage').textContent = '入库失败: ' + err.message;
+            document.getElementById('errorBoxManage').classList.add('show');
+        });
     }
 
     function pollDbAddStatus(taskId, btn) {
