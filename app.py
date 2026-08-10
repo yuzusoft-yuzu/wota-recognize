@@ -2,6 +2,8 @@
 Wota艺 技术识别 - Web 后端
 ==========================
 Flask 服务：接收视频上传 → 光流提取 → 向量检索 → 返回结果
+
+使用延迟加载以降低启动内存开销。
 """
 
 from __future__ import annotations
@@ -27,9 +29,6 @@ from werkzeug.utils import secure_filename
 BASE_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(BASE_DIR))
 
-from optical_flow_wota import WotaOpticalFlowPipeline
-from vector_db_wota import FeatureProjector, MoveRecord, WotaVectorDB
-
 # ---------- Flask 配置 ----------
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "wota-艺-secret-" + uuid.uuid4().hex[:16])
@@ -42,7 +41,7 @@ os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
 
 # ---------- 管理员鉴权 ----------
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")  # 生产环境务必修改
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 ADMIN_TOKEN = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()
 
 
@@ -54,81 +53,79 @@ def _check_admin_auth(request) -> bool:
     return hmac.compare_digest(token, ADMIN_TOKEN)
 
 
-@app.route("/api/auth/login", methods=["POST"])
-def api_auth_login():
-    """管理员登录，返回令牌"""
-    data = request.get_json() or {}
-    password = data.get("password", "")
-    if password != ADMIN_PASSWORD:
-        return jsonify({"error": "密码错误"}), 401
-    return jsonify({"token": ADMIN_TOKEN, "success": True})
+# ===================================================================
+# 延迟加载：重量级依赖
+# ===================================================================
+_optical_flow_module = None
+_vector_db_module = None
+_cached_db = None
+_dep_checks = {}
 
 
-@app.route("/api/auth/check", methods=["GET"])
-def api_auth_check():
-    """检查当前令牌是否有效"""
-    if _check_admin_auth(request):
-        return jsonify({"valid": True})
-    return jsonify({"valid": False})
+def _lazy_import_optical_flow():
+    """延迟加载光流模块（首次调用时才导入 cv2, numpy, scipy 等）"""
+    global _optical_flow_module
+    if _optical_flow_module is None:
+        from optical_flow_wota import WotaOpticalFlowPipeline
+        _optical_flow_module = WotaOpticalFlowPipeline
+    return _optical_flow_module
 
-# 全局任务状态（简单内存存储）
+
+def _lazy_import_vector_db():
+    """延迟加载向量数据库模块（首次调用时才导入 faiss 等）"""
+    global _vector_db_module
+    if _vector_db_module is None:
+        from vector_db_wota import FeatureProjector, MoveRecord, WotaVectorDB
+        _vector_db_module = (FeatureProjector, MoveRecord, WotaVectorDB)
+    return _vector_db_module
+
+
+def _check_dep(name: str, import_path: str | None = None) -> bool:
+    """延迟检查依赖是否可用（只检查不导入重模块）"""
+    if name in _dep_checks:
+        return _dep_checks[name]
+    try:
+        if import_path:
+            __import__(import_path)
+        else:
+            __import__(name)
+        _dep_checks[name] = True
+    except ImportError:
+        _dep_checks[name] = False
+    return _dep_checks[name]
+
+
+# ===================================================================
+# 辅助函数
+# ===================================================================
+def get_db():
+    """加载并缓存数据库，不存在则返回 None"""
+    global _cached_db
+    if _cached_db is not None:
+        return _cached_db
+    meta = app.config["DB_PATH"] + ".meta"
+    if os.path.exists(meta):
+        _, _, WotaVectorDB = _lazy_import_vector_db()
+        _cached_db = WotaVectorDB.load(app.config["DB_PATH"])
+        return _cached_db
+    return None
+
+
+# 全局任务状态
 TASKS: dict = {}
 DB_TASKS: dict = {}
 
 
 # ===================================================================
-# 依赖检测
+# 业务逻辑
 # ===================================================================
-_MISSING_DEPS = []
-
-try:
-    import cv2
-except ImportError:
-    _MISSING_DEPS.append("opencv-python (pip install opencv-python)")
-
-try:
-    import numpy as np
-except ImportError:
-    _MISSING_DEPS.append("numpy (pip install numpy)")
-
-try:
-    import scipy
-except ImportError:
-    _MISSING_DEPS.append("scipy (pip install scipy)")
-
-try:
-    import faiss
-except ImportError:
-    _MISSING_DEPS.append("faiss-cpu (pip install faiss-cpu)")
-
-if _MISSING_DEPS:
-    print(f"[警告] 缺少以下依赖，部分功能不可用:")
-    for d in _MISSING_DEPS:
-        print(f"  - {d}")
-
-# ===================================================================
-# 辅助函数
-# ===================================================================
-def get_db() -> WotaVectorDB | None:
-    """加载数据库，不存在则返回 None"""
-    meta = app.config["DB_PATH"] + ".meta"
-    if os.path.exists(meta):
-        return WotaVectorDB.load(app.config["DB_PATH"])
-    return None
-
-
 def process_video(task_id: str, video_path: str, colors: list[str]):
-    """
-    后台处理视频：
-      1. 光流提取
-      2. 向量检索
-      3. 更新任务状态
-    """
+    """后台处理视频：光流提取 → 向量检索 → 更新任务状态"""
     try:
         TASKS[task_id]["status"] = "processing"
         TASKS[task_id]["progress"] = 10
 
-        # ---- Step 1: 光流提取 ----
+        WotaOpticalFlowPipeline = _lazy_import_optical_flow()
         output_dir = os.path.join(app.config["OUTPUT_FOLDER"], task_id)
         pipeline = WotaOpticalFlowPipeline(
             video_path=video_path,
@@ -142,7 +139,10 @@ def process_video(task_id: str, video_path: str, colors: list[str]):
 
         raw_vector = pipeline.get_embedding_snapshot(normalize=True)
 
-        # ---- Step 2: 投影到目标维度 ----
+        # numpy 在 lazy import 时已经加载
+        import numpy as np
+
+        FeatureProjector, _, _ = _lazy_import_vector_db()
         db = get_db()
         if db and db.dim > len(raw_vector):
             projector = FeatureProjector(input_dim=len(raw_vector), output_dim=db.dim)
@@ -150,24 +150,21 @@ def process_video(task_id: str, video_path: str, colors: list[str]):
         else:
             query_vec = raw_vector.astype(np.float32)
 
-        # ---- Step 3: 向量检索 ----
         TASKS[task_id]["progress"] = 85
         results = []
         if db:
             results = db.search(query_vec, k=5, min_score=0.3)
 
-        # ---- Step 4: 更新结果 ----
         TASKS[task_id]["progress"] = 100
         TASKS[task_id]["status"] = "done"
         TASKS[task_id]["result"] = {
             "raw_vector_dim": int(len(raw_vector)),
-            "query_vector": query_vec.tolist()[:20],  # 只展示前20维
+            "query_vector": query_vec.tolist()[:20],
             "predictions": [
                 {
                     "move_name": r["move_name"],
                     "category": r["category"],
                     "confidence": round(r["confidence"] * 100, 1),
-                    "confidence_decimal": r["confidence"],
                 }
                 for r in results
             ],
@@ -194,6 +191,7 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
         DB_TASKS[task_id]["status"] = "processing"
         DB_TASKS[task_id]["progress"] = 20
 
+        WotaOpticalFlowPipeline = _lazy_import_optical_flow()
         output_dir = os.path.join(app.config["OUTPUT_FOLDER"], "std_" + task_id)
         pipeline = WotaOpticalFlowPipeline(
             video_path=video_path,
@@ -205,6 +203,9 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
         pipeline.run(step=1, max_frames=300, output_dir=output_dir)
         DB_TASKS[task_id]["progress"] = 70
         raw_vector = pipeline.get_embedding_snapshot(normalize=True)
+
+        import numpy as np
+        FeatureProjector, MoveRecord, WotaVectorDB = _lazy_import_vector_db()
 
         db = get_db()
         if db is None:
@@ -225,6 +226,10 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
         mid = db.insert(record)
         db.save(app.config["DB_PATH"])
 
+        # 刷新缓存
+        global _cached_db
+        _cached_db = db
+
         DB_TASKS[task_id]["progress"] = 100
         DB_TASKS[task_id]["status"] = "done"
         DB_TASKS[task_id]["result"] = {
@@ -238,11 +243,43 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
     except Exception as e:
         DB_TASKS[task_id]["status"] = "error"
         DB_TASKS[task_id]["error"] = str(e)
+
+
 # ===================================================================
+# 路由
+# ===================================================================
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """管理员登录，返回令牌"""
+    data = request.get_json() or {}
+    password = data.get("password", "")
+    if password != ADMIN_PASSWORD:
+        return jsonify({"error": "密码错误"}), 401
+    return jsonify({"token": ADMIN_TOKEN, "success": True})
+
+
+@app.route("/api/auth/check", methods=["GET"])
+def api_auth_check():
+    """检查当前令牌是否有效"""
+    if _check_admin_auth(request):
+        return jsonify({"valid": True})
+    return jsonify({"valid": False})
+
+
 @app.route("/api/health")
 def api_health():
-    """健康检查端点，用于验证容器是否正常运行"""
-    return jsonify({"status": "ok", "service": "wota-recognize"})
+    """健康检查 & 依赖状态"""
+    return jsonify({
+        "status": "ok",
+        "service": "wota-recognize",
+        "dependencies": {
+            "opencv": _check_dep("cv2"),
+            "numpy": _check_dep("numpy"),
+            "scipy": _check_dep("scipy"),
+            "faiss": _check_dep("faiss"),
+        },
+        "db_exists": os.path.exists(app.config["DB_PATH"] + ".meta"),
+    })
 
 
 @app.route("/")
@@ -257,17 +294,9 @@ def index():
     return render_template("index.html", db_info=db_info)
 
 
-# ===================================================================
-# API 路由
-# ===================================================================
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
-    """
-    上传视频并开始识别。
-    POST multipart/form-data
-      - video: 视频文件
-      - colors: (可选) 光棒颜色，逗号分隔，如 "orange,cyan"
-    """
+    """上传视频并开始识别"""
     if "video" not in request.files:
         return jsonify({"error": "请上传视频文件"}), 400
 
@@ -275,11 +304,9 @@ def api_upload():
     if file.filename == "":
         return jsonify({"error": "文件名为空"}), 400
 
-    # 颜色参数
     colors_raw = request.form.get("colors", "white")
     colors = [c.strip() for c in colors_raw.split(",") if c.strip()]
 
-    # 保存视频
     ext = Path(file.filename).suffix.lower()
     if ext not in (".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"):
         ext = ".mp4"
@@ -288,7 +315,6 @@ def api_upload():
     video_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
     file.save(video_path)
 
-    # 启动后台任务
     TASKS[task_id] = {
         "task_id": task_id,
         "status": "queued",
@@ -328,22 +354,6 @@ def api_task_status(task_id: str):
     return jsonify(resp)
 
 
-@app.route("/api/health")
-def api_health():
-    """健康检查 & 依赖状态"""
-    return jsonify({
-        "status": "ok",
-        "dependencies": {
-            "cv2": "opencv-python" not in " ".join(_MISSING_DEPS),
-            "numpy": "numpy" not in " ".join(_MISSING_DEPS),
-            "scipy": "scipy" not in " ".join(_MISSING_DEPS),
-            "faiss": "faiss" not in " ".join(_MISSING_DEPS),
-        },
-        "missing": _MISSING_DEPS,
-        "db_exists": os.path.exists(app.config["DB_PATH"] + ".meta"),
-    })
-
-
 @app.route("/api/db/info")
 def api_db_info():
     """数据库信息"""
@@ -360,10 +370,7 @@ def api_db_info():
 
 @app.route("/api/db/add", methods=["POST"])
 def api_db_add():
-    """
-    Web 端入库标准视频（异步）。【需要管理员权限】
-    返回 task_id，前端轮询 /api/db/add/status/<task_id> 获取进度。
-    """
+    """Web 端入库标准视频（异步）。【需要管理员权限】"""
     if not _check_admin_auth(request):
         return jsonify({"error": "需要管理员权限，请先登录"}), 403
 
@@ -379,17 +386,20 @@ def api_db_add():
     if file.filename == "":
         return jsonify({"error": "文件名为空"}), 400
 
-    # 依赖检查
-    for dep, msg in [("opencv-python", "opencv-python"), ("numpy", "numpy"),
-                     ("scipy", "scipy"), ("faiss", "faiss-cpu")]:
-        if dep in " ".join(_MISSING_DEPS):
-            return jsonify({"error": f"缺少 {msg}"}), 500
+    # 依赖检查（延迟方式）
+    if not _check_dep("cv2"):
+        return jsonify({"error": "缺少 opencv-python"}), 500
+    if not _check_dep("numpy"):
+        return jsonify({"error": "缺少 numpy"}), 500
+    if not _check_dep("scipy"):
+        return jsonify({"error": "缺少 scipy"}), 500
+    if not _check_dep("faiss"):
+        return jsonify({"error": "缺少 faiss-cpu"}), 500
 
     colors_raw = request.form.get("colors", "white")
     colors = [c.strip() for c in colors_raw.split(",") if c.strip()]
     bilibili = request.form.get("bilibili", "").strip()
 
-    # 保存视频
     ext = Path(file.filename).suffix.lower()
     if ext not in (".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"):
         ext = ".mp4"
@@ -398,7 +408,6 @@ def api_db_add():
     video_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
     file.save(video_path)
 
-    # 启动后台任务
     DB_TASKS[task_id] = {
         "task_id": task_id,
         "status": "queued",
@@ -474,15 +483,7 @@ def serve_output(task_id: str, filename: str):
 # 启动
 # ===================================================================
 if __name__ == "__main__":
-    db = get_db()
-    if db:
-        print(f"数据库已加载: {db.count()} 条技术")
-    else:
-        print("数据库为空，请通过 Web 界面「数据库管理」录入标准视频")
-    if _MISSING_DEPS:
-        print(f"缺少 {len(_MISSING_DEPS)} 个依赖，部分功能不可用:")
-        for d in _MISSING_DEPS:
-            print(f"  > {d}")
+    print("WOTA 服务启动中（延迟加载模式）...")
     print(f"健康检查: http://127.0.0.1:5000/api/health")
     print(f"访问 http://127.0.0.1:5000\n")
     port = int(os.environ.get("PORT", 5000))
