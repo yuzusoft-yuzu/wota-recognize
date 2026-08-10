@@ -239,6 +239,12 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
         DB_TASKS[task_id]["status"] = "error"
         DB_TASKS[task_id]["error"] = str(e)
 # ===================================================================
+@app.route("/api/health")
+def api_health():
+    """健康检查端点，用于验证容器是否正常运行"""
+    return jsonify({"status": "ok", "service": "wota-recognize"})
+
+
 @app.route("/")
 def index():
     """主页"""

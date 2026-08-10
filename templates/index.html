@@ -1181,6 +1181,11 @@
             alert('请先选择标准视频文件');
             return;
         }
+        // 文件大小检查（Sealos 代理可能限制上传大小）
+        if (selectedFileManage.size > 50 * 1024 * 1024) {
+            alert('视频文件过大（超过 50MB），请压缩后再上传');
+            return;
+        }
         const name = document.getElementById('moveNameInput').value.trim();
         if (!name) {
             alert('请输入中文名');
@@ -1202,7 +1207,14 @@
         formData.append('bilibili', document.getElementById('moveBilibiliInput').value.trim());
 
         adminFetch('/api/db/add', { method: 'POST', body: formData })
-            .then(r => r.json())
+            .then(r => {
+                if (!r.ok) {
+                    return r.text().then(text => {
+                        throw new Error('服务器错误(' + r.status + ')，可能是视频过大或代理超时，请尝试 10MB 以内的短视频');
+                    });
+                }
+                return r.json();
+            })
             .then(data => {
                 if (data.error) {
                     btn.disabled = false;
