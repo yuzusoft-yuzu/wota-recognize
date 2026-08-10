@@ -589,7 +589,7 @@ def api_upload_chunk():
 
 @app.route("/api/upload/merge", methods=["POST"])
 def api_upload_merge():
-    """合并所有分片并触发入库/识别"""
+    """合并所有分片并触发入库/识别（立即返回 task_id，后台合并）"""
     data = request.get_json() or {}
     upload_id = data.get("upload_id", "")
     action = data.get("action", "recognize")  # recognize | db_add
@@ -598,7 +598,6 @@ def api_upload_merge():
         return jsonify({"error": "上传会话不存在"}), 404
 
     session = UPLOAD_SESSIONS[upload_id]
-    chunk_dir = os.path.join(app.config["UPLOAD_FOLDER"], f"chunks_{upload_id}")
 
     # 检查所有分片是否就绪
     expected = set(range(session["total_chunks"]))
@@ -607,48 +606,38 @@ def api_upload_merge():
     if missing:
         return jsonify({"error": f"还有 {len(missing)} 个分片未上传"}), 400
 
-    # 合并文件
-    ext = session["ext"]
-    safe_name = f"{upload_id}{ext}"
-    video_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
-    with open(video_path, "wb") as out_f:
-        for i in range(session["total_chunks"]):
-            chunk_path = os.path.join(chunk_dir, f"chunk_{i:06d}")
-            with open(chunk_path, "rb") as in_f:
-                shutil.copyfileobj(in_f, out_f)
-
-    # 清理分片
-    shutil.rmtree(chunk_dir, ignore_errors=True)
-    del UPLOAD_SESSIONS[upload_id]
-
-    # 根据 action 触发后续处理
+    # 权限/参数检查（在返回前完成）
     if action == "db_add":
         name = data.get("name", "").strip()
+        if not _check_admin_auth(request):
+            return jsonify({"error": "需要管理员权限"}), 403
+        if not name:
+            return jsonify({"error": "请输入技术名称"}), 400
         category = data.get("category", "").strip()
         colors_raw = data.get("colors", "white")
         colors = [c.strip() for c in colors_raw.split(",") if c.strip()]
         bilibili = data.get("bilibili", "").strip()
 
-        if not _check_admin_auth(request):
-            return jsonify({"error": "需要管理员权限"}), 403
-        if not name:
-            return jsonify({"error": "请输入技术名称"}), 400
-
         task_id = uuid.uuid4().hex[:8]
         DB_TASKS[task_id] = {
             "task_id": task_id,
-            "status": "queued",
-            "progress": 5,
+            "status": "merging",
+            "progress": 1,
             "move_name": name,
             "created_at": datetime.now().isoformat(),
         }
+        # 后台线程：合并文件 → 处理入库
         thread = threading.Thread(
-            target=process_db_add,
-            args=(task_id, video_path, name, category, colors, bilibili, session["filename"]),
+            target=_merge_and_process,
+            args=(upload_id, task_id, "db_add", {
+                "name": name, "category": category,
+                "colors": colors, "bilibili": bilibili,
+                "filename": session["filename"],
+            }),
             daemon=True,
         )
         thread.start()
-        return jsonify({"task_id": task_id, "status": "queued"})
+        return jsonify({"task_id": task_id, "status": "merging"})
 
     else:  # recognize
         colors_raw = data.get("colors", "white")
@@ -656,18 +645,74 @@ def api_upload_merge():
         task_id = uuid.uuid4().hex[:8]
         TASKS[task_id] = {
             "task_id": task_id,
-            "status": "queued",
-            "progress": 0,
+            "status": "merging",
+            "progress": 1,
             "video_name": session["filename"],
             "created_at": datetime.now().isoformat(),
         }
         thread = threading.Thread(
-            target=process_video,
-            args=(task_id, video_path, colors),
+            target=_merge_and_process,
+            args=(upload_id, task_id, "recognize", {
+                "colors": colors, "filename": session["filename"],
+            }),
             daemon=True,
         )
         thread.start()
-        return jsonify({"task_id": task_id, "status": "queued"})
+        return jsonify({"task_id": task_id, "status": "merging"})
+
+
+def _merge_and_process(upload_id: str, task_id: str, action: str, params: dict):
+    """后台：合并分片文件 → 触发处理"""
+    try:
+        session = UPLOAD_SESSIONS.get(upload_id)
+        if not session:
+            _set_task_error(task_id, action, "上传会话已失效")
+            return
+
+        chunk_dir = os.path.join(app.config["UPLOAD_FOLDER"], f"chunks_{upload_id}")
+        ext = session["ext"]
+        safe_name = f"{upload_id}{ext}"
+        video_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_name)
+
+        # 合并文件
+        _set_task_status(task_id, action, "merging", 3)
+        with open(video_path, "wb") as out_f:
+            for i in range(session["total_chunks"]):
+                chunk_path = os.path.join(chunk_dir, f"chunk_{i:06d}")
+                with open(chunk_path, "rb") as in_f:
+                    shutil.copyfileobj(in_f, out_f)
+
+        # 清理分片
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        del UPLOAD_SESSIONS[upload_id]
+
+        _set_task_status(task_id, action, "queued", 5)
+
+        # 触发处理
+        if action == "db_add":
+            process_db_add(task_id, video_path, params["name"], params["category"],
+                           params["colors"], params["bilibili"], params["filename"])
+        else:
+            process_video(task_id, video_path, params["colors"])
+
+    except Exception as e:
+        _set_task_error(task_id, action, f"合并失败: {e}")
+
+
+def _set_task_status(task_id: str, action: str, status: str, progress: int):
+    """更新任务状态"""
+    store = DB_TASKS if action == "db_add" else TASKS
+    if task_id in store:
+        store[task_id]["status"] = status
+        store[task_id]["progress"] = progress
+
+
+def _set_task_error(task_id: str, action: str, error: str):
+    """设置任务错误"""
+    store = DB_TASKS if action == "db_add" else TASKS
+    if task_id in store:
+        store[task_id]["status"] = "error"
+        store[task_id]["error"] = error
 
 
 # ===================================================================

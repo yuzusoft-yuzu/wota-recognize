@@ -881,7 +881,7 @@
     }
 
     // ---------- 分片上传工具 ----------
-    const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+    const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB（更小分片，请求更快完成）
 
     // 单个分片上传（带重试）
     function uploadOneChunk(f, formData, retries = 3) {
@@ -957,7 +957,7 @@
             updateProgress(pct, text);
         })
         .then(uploadId => {
-            updateProgress(92, '正在合并文件...');
+            updateProgress(92, '正在提交合并请求...');
             return fetch('/api/upload/merge', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -974,7 +974,7 @@
                 showError(data.error);
                 return;
             }
-            updateProgress(5, '开始处理...');
+            updateProgress(5, '后台合并并处理中...');
             pollTask(data.task_id);
         })
         .catch(err => {
@@ -987,7 +987,11 @@
             fetch('/api/task/' + taskId)
                 .then(r => r.json())
                 .then(data => {
-                    if (data.status === 'processing') {
+                    if (data.status === 'merging') {
+                        updateProgress(data.progress, '正在合并分片文件...');
+                    } else if (data.status === 'queued') {
+                        updateProgress(data.progress, '排队中...');
+                    } else if (data.status === 'processing') {
                         updateProgress(data.progress, 'AI分析中... ' + data.progress + '%');
                     } else if (data.status === 'done') {
                         clearInterval(pollTimer);
@@ -1270,8 +1274,8 @@
             updateProgressManage(pct, text);
         }, adminFetch)
         .then(uploadId => {
-            // 3. 合并并触发入库
-            updateProgressManage(92, '正在合并文件...');
+            // 3. 提交合并请求（立即返回 task_id，后台合并+处理）
+            updateProgressManage(92, '正在提交合并请求...');
             return adminFetch('/api/upload/merge', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1294,7 +1298,7 @@
                 document.getElementById('errorBoxManage').classList.add('show');
                 return;
             }
-            updateProgressManage(100, '上传完成，开始处理...');
+            updateProgressManage(10, '后台合并并处理中...');
             pollDbAddStatus(data.task_id, btn);
         })
         .catch(err => {
@@ -1306,7 +1310,7 @@
     }
 
     function pollDbAddStatus(taskId, btn) {
-        updateProgressManage(20, '正在提取光流特征...');
+        updateProgressManage(8, '后台处理中...');
         const interval = setInterval(() => {
             adminFetch('/api/db/add/status/' + taskId)
                 .then(r => r.json())
@@ -1319,7 +1323,12 @@
                         document.getElementById('errorBoxManage').classList.add('show');
                         return;
                     }
-                    updateProgressManage(data.progress, data.status === 'done' ? '入库完成！' : '正在处理...');
+                    let label = '正在处理...';
+                    if (data.status === 'merging') label = '正在合并分片文件...';
+                    else if (data.status === 'queued') label = '排队中...';
+                    else if (data.status === 'processing') label = '正在提取光流特征...';
+                    else if (data.status === 'done') label = '入库完成！';
+                    updateProgressManage(data.progress, label);
                     if (data.status === 'done') {
                         clearInterval(interval);
                         btn.disabled = false;
