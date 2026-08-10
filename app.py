@@ -164,15 +164,41 @@ UPLOAD_SESSIONS: dict = {}  # 分片上传会话
 # ===================================================================
 # 业务逻辑
 # ===================================================================
+def preprocess_video(video_path: str) -> str:
+    """用 ffmpeg 压缩视频到 480p 30fps，降低内存占用。返回新路径（或原路径）"""
+    import subprocess
+    compressed_path = video_path + "_compressed.mp4"
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path,
+             "-vf", "scale=-2:480,fps=30",
+             "-c:v", "libx264", "-crf", "28", "-preset", "fast",
+             "-c:a", "aac", "-b:a", "64k",
+             compressed_path],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode == 0 and os.path.exists(compressed_path):
+            # 替换原文件
+            os.replace(compressed_path, video_path)
+            return video_path
+    except Exception as e:
+        print(f"[预处理] ffmpeg 压缩失败: {e}")
+    return video_path
+
+
 def process_video(task_id: str, video_path: str, colors: list[str]):
     """后台处理视频：光流提取 → 向量检索 → 更新任务状态"""
     try:
         TASKS[task_id]["status"] = "processing"
         TASKS[task_id]["progress"] = 5
 
+        # 预处理：压缩视频降低内存
+        video_path = preprocess_video(video_path)
+        TASKS[task_id]["progress"] = 10
+
         # 延迟加载光流模块（首次调用时才导入 cv2, numpy, scipy 等）
         WotaOpticalFlowPipeline = _lazy_import_optical_flow()
-        TASKS[task_id]["progress"] = 10
+        TASKS[task_id]["progress"] = 15
         output_dir = os.path.join(app.config["OUTPUT_FOLDER"], task_id)
         pipeline = WotaOpticalFlowPipeline(
             video_path=video_path,
@@ -181,7 +207,7 @@ def process_video(task_id: str, video_path: str, colors: list[str]):
             mode="light_tracking",
         )
         TASKS[task_id]["progress"] = 30
-        pipeline.run(step=1, max_frames=300, output_dir=output_dir)
+        pipeline.run(step=1, max_frames=150, output_dir=output_dir)
         TASKS[task_id]["progress"] = 70
 
         raw_vector = pipeline.get_embedding_snapshot(normalize=True)
@@ -236,6 +262,10 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
     """后台入库处理：光流提取 → 向量入库 → 保存数据库"""
     try:
         DB_TASKS[task_id]["status"] = "processing"
+        DB_TASKS[task_id]["progress"] = 10
+
+        # 预处理：压缩视频降低内存
+        video_path = preprocess_video(video_path)
         DB_TASKS[task_id]["progress"] = 20
 
         WotaOpticalFlowPipeline = _lazy_import_optical_flow()
@@ -247,7 +277,7 @@ def process_db_add(task_id: str, video_path: str, name: str, category: str,
             mode="light_tracking",
         )
         DB_TASKS[task_id]["progress"] = 40
-        pipeline.run(step=1, max_frames=300, output_dir=output_dir)
+        pipeline.run(step=1, max_frames=150, output_dir=output_dir)
         DB_TASKS[task_id]["progress"] = 70
         raw_vector = pipeline.get_embedding_snapshot(normalize=True)
 

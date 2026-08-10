@@ -1,12 +1,13 @@
 FROM python:3.11-slim
 
-# 安装 OpenCV 和 Faiss 所需的系统依赖
+# 安装 OpenCV、Faiss、ffmpeg 所需的系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender1 \
     libgomp1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
