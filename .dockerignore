@@ -1,9 +1,11 @@
-__pycache__/
+.git
+.github
+__pycache__
 *.pyc
 uploads/
 static/output/
-*.mp4
-.DS_Store
-.env
 *.log
+*.mp4
+.gitignore
+DEPLOY.md
 cloudflared.exe
