@@ -167,9 +167,11 @@ def process_video(task_id: str, video_path: str, colors: list[str]):
     """后台处理视频：光流提取 → 向量检索 → 更新任务状态"""
     try:
         TASKS[task_id]["status"] = "processing"
-        TASKS[task_id]["progress"] = 10
+        TASKS[task_id]["progress"] = 5
 
+        # 延迟加载光流模块（首次调用时才导入 cv2, numpy, scipy 等）
         WotaOpticalFlowPipeline = _lazy_import_optical_flow()
+        TASKS[task_id]["progress"] = 10
         output_dir = os.path.join(app.config["OUTPUT_FOLDER"], task_id)
         pipeline = WotaOpticalFlowPipeline(
             video_path=video_path,
@@ -312,16 +314,10 @@ def api_auth_check():
 
 @app.route("/api/health")
 def api_health():
-    """健康检查 & 依赖状态"""
+    """健康检查"""
     return jsonify({
         "status": "ok",
         "service": "wota-recognize",
-        "dependencies": {
-            "opencv": _check_dep("cv2"),
-            "numpy": _check_dep("numpy"),
-            "scipy": _check_dep("scipy"),
-            "faiss": _check_dep("faiss"),
-        },
         "db_exists": os.path.exists(app.config["DB_PATH"] + ".meta"),
     })
 
@@ -526,18 +522,8 @@ def serve_output(task_id: str, filename: str):
 # ===================================================================
 # 启动
 # ===================================================================
-@app.on_startup
-def _startup():
-    """Gunicorn 启动后后台预加载依赖"""
-    t = threading.Thread(target=_preload_deps, daemon=True)
-    t.start()
-    print("[启动] 后台预加载线程已启动")
-
-
 if __name__ == "__main__":
     print("WOTA 服务启动中（延迟加载模式）...")
-    # 本地开发时立即预加载
-    _preload_deps()
     print(f"健康检查: http://127.0.0.1:5000/api/health")
     print(f"访问 http://127.0.0.1:5000\n")
     port = int(os.environ.get("PORT", 5000))
