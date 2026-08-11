@@ -863,22 +863,14 @@
         return (bytes / 1048576).toFixed(1) + ' MB';
     }
 
-    // ---------- 颜色选择 ----------
+    // ---------- 颜色选择（单选） ----------
     document.querySelectorAll('#colorOptions .color-chip').forEach(chip => {
         chip.addEventListener('click', () => {
-            chip.classList.toggle('active');
-            updateSelectedColors();
+            document.querySelectorAll('#colorOptions .color-chip').forEach(c => c.classList.remove('active'));
+            chip.classList.add('active');
+            selectedColors = [chip.dataset.color];
         });
     });
-
-    function updateSelectedColors() {
-        selectedColors = [];
-        document.querySelectorAll('.color-chip.active').forEach(c => selectedColors.push(c.dataset.color));
-        if (selectedColors.length === 0) {
-            document.querySelector('.color-chip[data-color="white"]').classList.add('active');
-            selectedColors = ['bright'];
-        }
-    }
 
     // ---------- 分片上传工具 ----------
     const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB（更小分片，请求更快完成）
@@ -1229,23 +1221,14 @@
         document.getElementById('fileInfoManage').classList.remove('show');
     }
 
-    // 数据库管理 - 颜色选择
+    // 数据库管理 - 颜色选择（单选）
     document.querySelectorAll('#colorOptionsManage .color-chip').forEach(chip => {
         chip.addEventListener('click', () => {
-            chip.classList.toggle('active');
-            updateColorsManage();
+            document.querySelectorAll('#colorOptionsManage .color-chip').forEach(c => c.classList.remove('active'));
+            chip.classList.add('active');
+            selectedColorsManage = [chip.dataset.color];
         });
     });
-
-    function updateColorsManage() {
-        selectedColorsManage = [];
-        document.querySelectorAll('#colorOptionsManage .color-chip.active')
-            .forEach(c => selectedColorsManage.push(c.dataset.color));
-        if (selectedColorsManage.length === 0) {
-            document.querySelector('#colorOptionsManage .color-chip[data-color="white"]').classList.add('active');
-            selectedColorsManage = ['bright'];
-        }
-    }
 
     // ================================================================
     // 数据库管理 - 入库
