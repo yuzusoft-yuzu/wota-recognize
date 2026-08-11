@@ -542,23 +542,26 @@ def api_db_delete():
 
 @app.route("/api/db/update", methods=["POST"])
 def api_db_update():
-    """修改技术详情（名称/分类/链接）。【需要管理员权限】"""
+    """Web 端修改技术详情。【需要管理员权限】"""
     if not _check_admin_auth(request):
         return jsonify({"error": "需要管理员权限，请先登录"}), 403
-    data = request.get_json()
-    move_id = data.get("move_id", "").strip()
+    data = request.get_json() or {}
+    move_id = (data.get("move_id") or "").strip()
+    move_name = data.get("move_name")
+    category = data.get("category")
+    bilibili = data.get("bilibili")
     if not move_id:
         return jsonify({"error": "缺少 move_id"}), 400
-
+    if move_name is not None and not str(move_name).strip():
+        return jsonify({"error": "技术名称不能为空"}), 400
     db = get_db()
     if not db:
         return jsonify({"error": "数据库不存在"}), 404
-
     ok = db.update_move(
         move_id,
-        move_name=data.get("move_name", "").strip() or None,
-        category=data.get("category", "").strip() if "category" in data else None,
-        bilibili=data.get("bilibili", "").strip() if "bilibili" in data else None,
+        move_name=str(move_name).strip() if move_name is not None else None,
+        category=str(category).strip() if category is not None else None,
+        bilibili=str(bilibili).strip() if bilibili is not None else None,
     )
     if ok:
         db.save(app.config["DB_PATH"])

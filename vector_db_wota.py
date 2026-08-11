@@ -322,24 +322,6 @@ class WotaVectorDB:
         print(f"[DB] 已标记删除: {move_id}（需 rebuild 索引才能真正从向量库删除）")
         return True
 
-    def update_move(self, move_id: str, move_name: str = None,
-                    category: str = None, bilibili: str = None) -> bool:
-        """修改技术详情（不改向量）"""
-        if move_id not in self._id_to_faiss:
-            return False
-        faiss_id = self._id_to_faiss[move_id]
-        rec = self._records.get(faiss_id)
-        if not rec:
-            return False
-        if move_name is not None:
-            rec.move_name = move_name
-        if category is not None:
-            rec.category = category
-        if bilibili is not None:
-            rec.bilibili = bilibili
-        print(f"[DB] 已更新技术: {move_id}")
-        return True
-
     def list_all(self) -> List[Dict]:
         """列出所有技术"""
         return [
@@ -418,6 +400,24 @@ class WotaVectorDB:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
         print(f"[DB] 已保存: {base}.index + {base}.meta ({len(self._records)} 条)")
+
+    # ---------- 修改 ----------
+    def update_move(self, move_id: str, move_name: str = None,
+                    category: str = None, bilibili: str = None) -> bool:
+        """更新技术的元数据（不涉及向量重新提取）。返回是否成功"""
+        if move_id not in self._id_to_faiss:
+            return False
+        faiss_id = self._id_to_faiss[move_id]
+        rec = self._records.get(faiss_id)
+        if rec is None:
+            return False
+        if move_name is not None:
+            rec.move_name = move_name
+        if category is not None:
+            rec.category = category
+        if bilibili is not None:
+            rec.bilibili = bilibili
+        return True
 
     @classmethod
     def load(cls, path: str) -> "WotaVectorDB":

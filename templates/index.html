@@ -1456,23 +1456,23 @@
         const links = (m.bilibili || '').split('|').map(s => s.trim()).filter(s => s);
         const modal = document.createElement('div');
         modal.className = 'delete-modal-overlay';
-        modal.innerHTML = `
+        modal.innerHTML = \`
             <div class="delete-modal" style="width:420px;">
                 <h3 style="color:#00ffcc;">编辑技术</h3>
                 <div style="margin:12px 0 8px;color:#888;font-size:0.8em;">中文名</div>
-                <input class="form-input" id="editName" value="${escapeHtml(m.move_name)}" style="width:100%;box-sizing:border-box;">
+                <input class="form-input" id="editName" value="\${escapeHtml(m.move_name)}" style="width:100%;box-sizing:border-box;">
                 <div style="margin:12px 0 8px;color:#888;font-size:0.8em;">日语名</div>
-                <input class="form-input" id="editCategory" value="${escapeHtml(m.category || '')}" style="width:100%;box-sizing:border-box;">
+                <input class="form-input" id="editCategory" value="\${escapeHtml(m.category || '')}" style="width:100%;box-sizing:border-box;">
                 <div style="margin:12px 0 8px;color:#888;font-size:0.8em;">B站视频链接（每行一个，支持多个）</div>
                 <textarea class="form-input" id="editBilibili" rows="4" placeholder="每行一个链接或BV号"
                     style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;"></textarea>
                 <div class="delete-modal-btns" style="margin-top:16px;">
                     <button class="btn btn-cancel" onclick="closeEditModal()">取消</button>
-                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#00ffcc,#00cc99);color:#0a0a0f;padding:8px 20px;font-size:0.9em;" onclick="confirmEditBrowse('${moveId}')">保存</button>
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#00ffcc,#00cc99);color:#0a0a0f;padding:8px 20px;font-size:0.9em;" onclick="confirmEditBrowse('\${moveId}')">保存</button>
                 </div>
                 <div class="login-error" id="editError" style="margin-top:8px;display:none;">保存失败，请重试</div>
             </div>
-        `;
+        \`;
         document.body.appendChild(modal);
         document.getElementById('editBilibili').value = links.join('\n');
     }
