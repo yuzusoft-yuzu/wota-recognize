@@ -34,8 +34,8 @@ sys.path.insert(0, str(BASE_DIR))
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "wota-艺-secret-" + uuid.uuid4().hex[:16])
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB
-app.config["UPLOAD_FOLDER"] = str(BASE_DIR / "uploads")
-app.config["OUTPUT_FOLDER"] = str(BASE_DIR / "static" / "output")
+app.config["UPLOAD_FOLDER"] = os.environ.get("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))
+app.config["OUTPUT_FOLDER"] = os.environ.get("OUTPUT_FOLDER", str(BASE_DIR / "static" / "output"))
 app.config["DB_PATH"] = os.environ.get("WOTA_DB_PATH", str(BASE_DIR / "wota_db"))
 
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
@@ -534,6 +534,32 @@ def api_db_delete():
         return jsonify({"error": "数据库不存在"}), 404
 
     ok = db.delete(move_id)
+    if ok:
+        db.save(app.config["DB_PATH"])
+        return jsonify({"success": True, "total_count": db.count()})
+    return jsonify({"error": "技术不存在"}), 404
+
+
+@app.route("/api/db/update", methods=["POST"])
+def api_db_update():
+    """修改技术详情（名称/分类/链接）。【需要管理员权限】"""
+    if not _check_admin_auth(request):
+        return jsonify({"error": "需要管理员权限，请先登录"}), 403
+    data = request.get_json()
+    move_id = data.get("move_id", "").strip()
+    if not move_id:
+        return jsonify({"error": "缺少 move_id"}), 400
+
+    db = get_db()
+    if not db:
+        return jsonify({"error": "数据库不存在"}), 404
+
+    ok = db.update_move(
+        move_id,
+        move_name=data.get("move_name", "").strip() or None,
+        category=data.get("category", "").strip() if "category" in data else None,
+        bilibili=data.get("bilibili", "").strip() if "bilibili" in data else None,
+    )
     if ok:
         db.save(app.config["DB_PATH"])
         return jsonify({"success": True, "total_count": db.count()})

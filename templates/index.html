@@ -779,7 +779,7 @@
             <input class="form-input" type="text" id="moveJpNameInput" placeholder="日语名，如 サンダースネーク">
         </div>
 
-        <input class="form-input" type="text" id="moveBilibiliInput" placeholder="B站视频链接或BV号（选填）"
+        <input class="form-input" type="text" id="moveBilibiliInput" placeholder="B站视频链接或BV号（选填，多个用 | 分隔）"
                style="width:100%;margin-bottom:12px;">
 
         <div class="color-options" id="colorOptionsManage">
@@ -1416,18 +1416,23 @@
             tbody.innerHTML = filtered.map(m => {
                 let bili = '';
                 if (m.bilibili) {
-                    // 自动补全为完整链接
-                    let url = m.bilibili;
-                    if (!url.startsWith('http')) {
-                        url = 'https://www.bilibili.com/video/' + url;
-                    }
-                    bili = `<a href="${url}" target="_blank" rel="noopener" style="color:#fb7299;">观看</a>`;
+                    const links = m.bilibili.split('|').map(s => s.trim()).filter(s => s);
+                    bili = links.map((link, i) => {
+                        let url = link;
+                        if (!url.startsWith('http')) {
+                            url = 'https://www.bilibili.com/video/' + url;
+                        }
+                        return `<a href="${url}" target="_blank" rel="noopener" style="color:#fb7299;">视频${links.length > 1 ? i+1 : ''}</a>`;
+                    }).join(' ');
                 } else {
                     bili = '—';
                 }
                 let actionCol = '';
                 if (_adminToken) {
-                    actionCol = `<td><button class="btn-sm" onclick="deleteMoveBrowse('${m.move_id}','${escapeHtml(m.move_name)}')">删除</button></td>`;
+                    actionCol = `<td style="white-space:nowrap;">
+                        <button class="btn-sm" style="border-color:rgba(0,255,204,0.3);color:#00ffcc;margin-right:4px;" onclick="editMoveBrowse('${m.move_id}')">编辑</button>
+                        <button class="btn-sm" onclick="deleteMoveBrowse('${m.move_id}','${escapeHtml(m.move_name)}')">删除</button>
+                    </td>`;
                 }
                 return `
                 <tr>
@@ -1460,6 +1465,75 @@
                     alert('删除失败: ' + (data.error || '未知'));
                 }
             });
+    }
+
+    function editMoveBrowse(moveId) {
+        const m = _allMoves.find(x => x.move_id === moveId);
+        if (!m) return;
+        const links = (m.bilibili || '').split('|').map(s => s.trim()).filter(s => s);
+        const modal = document.createElement('div');
+        modal.className = 'delete-modal-overlay';
+        modal.innerHTML = `
+            <div class="delete-modal" style="width:420px;">
+                <h3 style="color:#00ffcc;">编辑技术</h3>
+                <div style="margin:12px 0 8px;color:#888;font-size:0.8em;">中文名</div>
+                <input class="form-input" id="editName" value="${escapeHtml(m.move_name)}" style="width:100%;box-sizing:border-box;">
+                <div style="margin:12px 0 8px;color:#888;font-size:0.8em;">日语名</div>
+                <input class="form-input" id="editCategory" value="${escapeHtml(m.category || '')}" style="width:100%;box-sizing:border-box;">
+                <div style="margin:12px 0 8px;color:#888;font-size:0.8em;">B站视频链接（每行一个，支持多个）</div>
+                <textarea class="form-input" id="editBilibili" rows="4" placeholder="每行一个链接或BV号"
+                    style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;"></textarea>
+                <div class="delete-modal-btns" style="margin-top:16px;">
+                    <button class="btn btn-cancel" onclick="closeEditModal()">取消</button>
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#00ffcc,#00cc99);color:#0a0a0f;padding:8px 20px;font-size:0.9em;" onclick="confirmEditBrowse('${moveId}')">保存</button>
+                </div>
+                <div class="login-error" id="editError" style="margin-top:8px;display:none;">保存失败，请重试</div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById('editBilibili').value = links.join('\n');
+    }
+
+    function closeEditModal() {
+        const m = document.querySelector('.delete-modal-overlay');
+        if (m) m.remove();
+    }
+
+    function confirmEditBrowse(moveId) {
+        const name = document.getElementById('editName').value.trim();
+        const category = document.getElementById('editCategory').value.trim();
+        const bilibiliRaw = document.getElementById('editBilibili').value.trim();
+        const bilibili = bilibiliRaw.split('\n').map(s => s.trim()).filter(s => s).join('|');
+
+        if (!name) {
+            document.getElementById('editError').textContent = '技术名称不能为空';
+            document.getElementById('editError').style.display = 'block';
+            return;
+        }
+
+        fetch('/api/db/update', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-Token': _adminToken,
+            },
+            body: JSON.stringify({ move_id: moveId, move_name: name, category: category, bilibili: bilibili }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                closeEditModal();
+                refreshMoveList();
+                showToast('已保存修改');
+            } else {
+                document.getElementById('editError').textContent = data.error || '保存失败';
+                document.getElementById('editError').style.display = 'block';
+            }
+        })
+        .catch(() => {
+            document.getElementById('editError').textContent = '网络错误';
+            document.getElementById('editError').style.display = 'block';
+        });
     }
 
     function deleteMoveBrowse(moveId, moveName) {
