@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Wota艺 动作识别{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="{{ url_for('portal') }}">
+        <span class="brand-mark">ヲ</span>
+        <span class="brand-text">Wota艺 · 动作识别系统</span>
+      </a>
+      <nav class="nav">
+        <a href="{{ url_for('page_recognize') }}"
+           class="nav-link {{ 'active' if active=='recognize' else '' }}">动作识别</a>
+        <a href="{{ url_for('page_techniques') }}"
+           class="nav-link {{ 'active' if active=='techniques' else '' }}">技术总览</a>
+        <a href="{{ url_for('page_admin') }}"
+           class="nav-link {{ 'active' if active=='admin' else '' }}">管理员界面</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>骨光融合提取 · MediaPipe 骨骼 + OpenCV 光棒 · DTW 时序比对</span>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

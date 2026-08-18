@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}技术总览 · Wota艺{% endblock %}
+{% block content %}
+<section class="page">
+  <h1 class="page-title">技术总览</h1>
+  <p class="page-desc">浏览与搜索所有已收录的 Wota 艺技名。技名均来自管理员上传的标准动作视频。点击技名查看详细信息。<span id="adminHint" class="admin-hint" hidden>（你已登录管理员，可修改详细信息）</span></p>
+
+  <div class="searchbar">
+    <input type="text" id="searchInput" placeholder="搜索技名 / 日语名 / 分类…" autocomplete="off" />
+    <button id="searchClear" class="btn ghost" hidden>清除</button>
+  </div>
+
+  <div id="techCount" class="tech-count"></div>
+  <div id="techList" class="tech-list"></div>
+  <div id="emptyState" class="empty-state" hidden>
+    <div class="empty-icon">📭</div>
+    <p>数据库暂无技名。请由管理员在「管理员界面」上传标准动作视频后，技名将出现在这里。</p>
+  </div>
+</section>
+
+<!-- 详情弹窗 -->
+<div id="detailModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="dTitle"></h2>
+      <button class="modal-x" data-close>✕</button>
+    </div>
+    <div id="detailBody" class="modal-body"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/techniques.js') }}"></script>
+{% endblock %}

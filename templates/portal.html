@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Wota艺 · 动作识别系统{% endblock %}
+{% block content %}
+<section class="portal">
+  <div class="hero">
+    <h1>Wota艺 动作识别系统</h1>
+    <p class="hero-sub">基于「骨光融合」的荧光棒舞蹈技术识别 —— 上传一段视频，告诉你这是什么技。</p>
+  </div>
+
+  <div class="cards">
+    <a class="card card-rec" href="{{ url_for('page_recognize') }}">
+      <div class="card-icon">🎥</div>
+      <h2>动作识别</h2>
+      <p>看到一段视频不懂技名？上传视频，系统比对数据库并告诉你技名与匹配度。</p>
+      <span class="card-go">进入识别 →</span>
+    </a>
+
+    <a class="card card-tech" href="{{ url_for('page_techniques') }}">
+      <div class="card-icon">📖</div>
+      <h2>技术总览</h2>
+      <p>搜索并浏览所有已收录的 Wota 艺技名，查看日语名、B站链接等详细信息。</p>
+      <span class="card-go">浏览技名 →</span>
+    </a>
+
+    <a class="card card-admin" href="{{ url_for('page_admin') }}">
+      <div class="card-icon">🛠️</div>
+      <h2>管理员界面</h2>
+      <p>登录后上传标准动作视频、标注技名，让系统分析入库；并可修改技术详细信息。</p>
+      <span class="card-go">进入管理 →</span>
+    </a>
+  </div>
+
+  <div class="portal-status" id="portalStatus">正在加载系统状态…</div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+fetch('/api/health').then(r=>r.json()).then(d=>{
+  const el=document.getElementById('portalStatus');
+  const mp=d.mediapipe_available?'<b style="color:#7ee787">已启用骨骼融合</b>':'<b style="color:#f0883e">纯光棒模式（未安装 MediaPipe）</b>';
+  el.innerHTML=`已收录 <b>${d.technique_count}</b> 个技名 · ${mp}`;
+}).catch(()=>{document.getElementById('portalStatus').textContent='系统状态获取失败';});
+</script>
+{% endblock %}

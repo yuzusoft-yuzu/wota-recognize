@@ -401,24 +401,6 @@ class WotaVectorDB:
 
         print(f"[DB] 已保存: {base}.index + {base}.meta ({len(self._records)} 条)")
 
-    # ---------- 修改 ----------
-    def update_move(self, move_id: str, move_name: str = None,
-                    category: str = None, bilibili: str = None) -> bool:
-        """更新技术的元数据（不涉及向量重新提取）。返回是否成功"""
-        if move_id not in self._id_to_faiss:
-            return False
-        faiss_id = self._id_to_faiss[move_id]
-        rec = self._records.get(faiss_id)
-        if rec is None:
-            return False
-        if move_name is not None:
-            rec.move_name = move_name
-        if category is not None:
-            rec.category = category
-        if bilibili is not None:
-            rec.bilibili = bilibili
-        return True
-
     @classmethod
     def load(cls, path: str) -> "WotaVectorDB":
         """从磁盘加载"""

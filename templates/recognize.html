@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}动作识别 · Wota艺{% endblock %}
+{% block content %}
+<section class="page">
+  <h1 class="page-title">动作识别</h1>
+  <p class="page-desc">上传一段 Wota 艺视频，系统将提取「骨骼 + 光棒轨迹」特征，与数据库中的标准动作做 DTW 时序比对，告诉你这段视频的技名与匹配度。</p>
+
+  <div class="panel">
+    <div id="dropzone" class="dropzone">
+      <div class="dz-icon">⬆️</div>
+      <div class="dz-text">点击或拖拽视频到此处上传</div>
+      <div class="dz-hint">建议 ~10 秒、50MB 以内（mp4 / mov / webm / avi）</div>
+      <input type="file" id="fileInput" accept="video/*" hidden />
+      <div id="fileChosen" class="file-chosen" hidden></div>
+    </div>
+
+    <button id="submitBtn" class="btn primary" disabled>开始识别</button>
+  </div>
+
+  <div id="progressBox" class="progress-box" hidden>
+    <div class="progress-label" id="progressLabel">排队中…</div>
+    <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+  </div>
+
+  <div id="resultBox" class="result-box" hidden></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/recognize.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}管理员界面 · Wota艺{% endblock %}
+{% block content %}
+<section class="page">
+  <h1 class="page-title">管理员界面</h1>
+
+  <!-- 登录 -->
+  <div id="loginPanel" class="panel panel-narrow" hidden>
+    <h2 class="panel-title">管理员登录</h2>
+    <p class="page-desc">请输入账号与密码登录。</p>
+    <div id="loginError" class="alert error" hidden></div>
+    <label class="field">
+      <span>账号</span>
+      <input type="text" id="loginUser" placeholder="账号" autocomplete="username" />
+    </label>
+    <label class="field">
+      <span>密码</span>
+      <input type="password" id="loginPass" placeholder="密码" autocomplete="current-password" />
+    </label>
+    <button id="loginBtn" class="btn primary">登录</button>
+    <p class="hint">默认账号 admin / admin123（可通过环境变量 ADMIN_USER / ADMIN_PASSWORD 覆盖）</p>
+  </div>
+
+  <!-- 管理面板 -->
+  <div id="adminPanel" class="admin-panel" hidden>
+    <div class="admin-head">
+      <div>
+        <h2 class="panel-title">标准动作上传</h2>
+        <p class="page-desc">上传一段约 10 秒、50MB 以内的标准动作视频，并标注技名，系统将分析后入库。</p>
+      </div>
+      <button id="logoutBtn" class="btn ghost">退出登录</button>
+    </div>
+
+    <div class="admin-grid">
+      <div class="panel">
+        <div id="adminDrop" class="dropzone">
+          <div class="dz-icon">⬆️</div>
+          <div class="dz-text">点击或拖拽标准动作视频</div>
+          <div class="dz-hint">~10 秒 / ≤50MB（mp4 / mov / webm / avi）</div>
+          <input type="file" id="adminFile" accept="video/*" hidden />
+          <div id="adminFileChosen" class="file-chosen" hidden></div>
+        </div>
+
+        <label class="field">
+          <span>技名 <em>*</em>（入库后将以此命名）</span>
+          <input type="text" id="fName" placeholder="如：ロマンス / サンダースネーク" />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>日语名</span>
+            <input type="text" id="fJp" placeholder="如：ロマンス" />
+          </label>
+          <label class="field">
+            <span>分类</span>
+            <input type="text" id="fCat" placeholder="如：技 / 雷蛇 / ロマンス" />
+          </label>
+        </div>
+        <label class="field">
+          <span>B站链接 / BV号</span>
+          <input type="text" id="fBili" placeholder="如：BV1xx411x 或 https://b23.tv/..." />
+        </label>
+        <label class="field">
+          <span>描述</span>
+          <textarea id="fDesc" rows="2" placeholder="可选：动作要点、来源等"></textarea>
+        </label>
+
+        <button id="uploadBtn" class="btn primary" disabled>上传并分析入库</button>
+      </div>
+
+      <div class="panel">
+        <h3 class="panel-subtitle">分析进度与结果</h3>
+        <div id="adminProgress" class="progress-box" hidden>
+          <div class="progress-label" id="adminProgLabel">排队中…</div>
+          <div class="progress-track"><div class="progress-bar" id="adminProgBar"></div></div>
+        </div>
+        <div id="adminResult" class="result-box"></div>
+        <div id="adminIdle" class="muted">尚无任务。上传后将在此显示分析进度与入库结果。</div>
+      </div>
+    </div>
+
+    <div class="admin-foot">
+      <span id="adminCount" class="muted"></span>
+      <a class="btn ghost" href="{{ url_for('page_techniques') }}">前往技术总览修改详细信息 →</a>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+{% endblock %}
