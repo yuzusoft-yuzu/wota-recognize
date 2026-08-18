@@ -1,13 +1,15 @@
 # ===== Wota艺 动作识别系统 (骨光融合版) 核心依赖 =====
 flask
 numpy
-opencv-python-headless
+# 注意：mediapipe 强制依赖 opencv-contrib-python（GUI 版）而非 headless，
+# 故此处统一用 contrib 版，避免两包并存时 cv2 目录互相覆盖。
+# 服务器需安装系统库：libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1
+opencv-contrib-python
 scipy
 
-# ===== 可选：启用「骨骼融合」(A路 MediaPipe 骨骼) =====
-# 未安装时系统自动降级为「纯光棒模式」(仅 B路 OpenCV 光棒)，功能仍可用。
-# 注意：mediapipe 对 Python 版本与 numpy 2.x 兼容性有要求，按需安装。
-# mediapipe
+# ===== 骨骼融合 (A路 MediaPipe 骨骼) =====
+# 已启用：安装后系统以「骨光融合」模式运行；未安装时自动降级为「纯光棒模式」。
+mediapipe>=1.0.1
 
-# ===== 可选：生产部署 (Linux) =====
-# gunicorn
+# ===== 生产部署 (Linux) =====
+gunicorn
