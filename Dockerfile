@@ -28,4 +28,4 @@ RUN mkdir -p uploads static/output
 # 端口由环境变量 PORT 控制（默认 5000；HuggingFace 可传 7860）
 EXPOSE 5000
 
-CMD ["sh", "-c", "gunicorn app:app --workers 2 --threads 4 --timeout 300 -b 0.0.0.0:${PORT:-5000}"]
+CMD ["sh", "-c", "waitress-serve --port=${PORT:-5000} --threads=8 app:app"]

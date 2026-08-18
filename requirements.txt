@@ -11,5 +11,6 @@ scipy
 # 已启用：安装后系统以「骨光融合」模式运行；未安装时自动降级为「纯光棒模式」。
 mediapipe>=1.0.1
 
-# ===== 生产部署 (Linux) =====
-gunicorn
+# ===== 生产部署 (跨平台) =====
+# waitress 纯 Python，Windows/Linux 均可；gunicorn 仅 Linux，故弃用
+waitress
