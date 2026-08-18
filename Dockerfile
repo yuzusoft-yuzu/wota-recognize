@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
-# 安装 OpenCV、Faiss、ffmpeg 所需的系统依赖
+# 安装 OpenCV(contrib/GUI版)、mediapipe、ffmpeg 所需的系统依赖
+# libgl1/libsm6/libxext6/libxrender1: opencv-contrib-python(GUI版) 必需
+# libgomp1: scipy 数值库; libglib2.0-0: gstreamer/glib 基础
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -22,7 +25,7 @@ COPY . .
 # 创建运行时目录
 RUN mkdir -p uploads static/output
 
-# Hugging Face Spaces 要求监听 7860 端口
-EXPOSE 7860
+# 端口由环境变量 PORT 控制（默认 5000；HuggingFace 可传 7860）
+EXPOSE 5000
 
-CMD ["gunicorn", "app:app", "--workers", "1", "--threads", "4", "--timeout", "300", "-b", "0.0.0.0:7860"]
+CMD ["sh", "-c", "gunicorn app:app --workers 2 --threads 4 --timeout 300 -b 0.0.0.0:${PORT:-5000}"]
