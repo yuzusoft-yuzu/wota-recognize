@@ -48,6 +48,7 @@ os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
 # ===================================================================
 _fusion_module = None
 _db_instance = None
+_bilibili_matcher_module = None
 _dep_checks: dict = {}
 
 
@@ -57,6 +58,15 @@ def _lazy_fusion():
         from skeleton_light_fusion import FusionPipeline, Recognizer, DTWMatcher, _HAS_MP
         _fusion_module = (FusionPipeline, Recognizer, DTWMatcher, _HAS_MP)
     return _fusion_module
+
+
+def _lazy_bilibili_matcher():
+    """延迟加载 B站视频溯源匹配器（bilibili_matcher）。"""
+    global _bilibili_matcher_module
+    if _bilibili_matcher_module is None:
+        from bilibili_matcher import get_matcher, extract_keyframe_features, _HAS_FAISS
+        _bilibili_matcher_module = (get_matcher, extract_keyframe_features, _HAS_FAISS)
+    return _bilibili_matcher_module
 
 
 def get_db():
@@ -126,6 +136,7 @@ def _file_size_ok(path: str, max_mb: int) -> bool:
 # 全局任务状态（内存）
 TASKS: dict = {}      # 识别任务
 STD_TASKS: dict = {}  # 标准化(入库)任务
+MATCH_TASKS: dict = {}  # B站视频溯源匹配任务
 
 
 # ===================================================================
@@ -207,7 +218,49 @@ def process_recognize(task_id: str, video_path: str):
         _progress_err(store, task_id, str(e))
 
 
-def process_standardize(task_id: str, video_path: str, fields: dict, src_name: str):
+def process_match_video(task_id: str, video_path: str):
+    """B站视频溯源：抽关键帧提特征 → Faiss检索 → 返回最相似的B站视频链接。"""
+    store = MATCH_TASKS
+    try:
+        _progress(store, task_id, "processing", 10)
+        for dep in ("cv2", "numpy"):
+            if not _check_dep(dep):
+                raise RuntimeError(f"缺少依赖 {dep}")
+        get_matcher, extract_keyframe_features, has_faiss = _lazy_bilibili_matcher()
+        if not has_faiss:
+            raise RuntimeError("服务器未安装 faiss，视频溯源功能不可用")
+
+        _progress(store, task_id, "extracting", 30)
+        # 抽 5 个关键帧，每帧 38 维特征（与B站库同源）
+        query_feats = extract_keyframe_features(video_path, n_frames=5, use_skeleton=True)
+        if not query_feats:
+            raise RuntimeError("无法从视频中提取关键帧特征，请检查视频格式")
+
+        _progress(store, task_id, "searching", 70)
+        matcher = get_matcher()
+        if not matcher.ready:
+            # 库未就绪（空库/文件缺失）：返回友好提示而非报错
+            _progress(store, task_id, "done", 100)
+            store[task_id]["result"] = {
+                "db_ready": False,
+                "video_count": 0,
+                "query_frames": len(query_feats),
+                "matches": [],
+                "message": "B站视频特征库尚未建立，请等待数据爬取完成后再试",
+            }
+            return
+
+        matches = matcher.match(query_feats, top_k=5, per_frame_k=5, min_sim=0.0)
+        _progress(store, task_id, "done", 100)
+        store[task_id]["result"] = {
+            "db_ready": True,
+            "video_count": matcher.video_count,
+            "query_frames": len(query_feats),
+            "matches": matches,
+            "message": "已找到 %d 个候选B站视频" % len(matches) if matches else "未找到相似B站视频",
+        }
+    except Exception as e:
+        _progress_err(store, task_id, str(e))
     """管理员标准化：提取特征 → 以管理员标注的技名入库。"""
     store = STD_TASKS
     try:
@@ -389,6 +442,44 @@ def api_recognize_status(task_id: str):
 
 
 # ===================================================================
+# B站视频溯源 API（上传视频 → 匹配B站wota艺视频 → 返回链接）
+# ===================================================================
+@app.route("/api/match-video", methods=["POST"])
+def api_match_video():
+    if "video" not in request.files:
+        return jsonify({"error": "请上传视频文件"}), 400
+    file = request.files["video"]
+    if not file.filename:
+        return jsonify({"error": "文件名为空"}), 400
+    path = _save_upload(file, "mv")
+    if not _file_size_ok(path, app.config["MAX_STANDARD_MB"]):
+        os.remove(path)
+        return jsonify({"error": f"视频过大，请压缩到 {app.config['MAX_STANDARD_MB']}MB 以内"}), 413
+
+    task_id = uuid.uuid4().hex[:10]
+    MATCH_TASKS[task_id] = {
+        "task_id": task_id, "status": "queued", "progress": 2,
+        "video_name": file.filename, "created_at": datetime.now().isoformat(),
+    }
+    threading.Thread(target=process_match_video, args=(task_id, path), daemon=True).start()
+    return jsonify({"task_id": task_id, "status": "queued"})
+
+
+@app.route("/api/match-video/<task_id>")
+def api_match_video_status(task_id: str):
+    t = MATCH_TASKS.get(task_id)
+    if not t:
+        return jsonify({"error": "任务不存在"}), 404
+    resp = {"task_id": t["task_id"], "status": t["status"],
+            "progress": t.get("progress", 0), "video_name": t.get("video_name", "")}
+    if t["status"] == "done":
+        resp["result"] = t["result"]
+    elif t["status"] == "error":
+        resp["error"] = t.get("error", "未知错误")
+    return jsonify(resp)
+
+
+# ===================================================================
 # 管理员标准化 API（上传标准动作视频 → 标注技名 → 入库）
 # ===================================================================
 @app.route("/api/admin/upload", methods=["POST"])
@@ -451,12 +542,27 @@ def api_admin_upload_status(task_id: str):
 def api_health():
     _, _, _, has_mp = _lazy_fusion()
     db = get_db()
+    # B站溯源库状态
+    bilibili_ready = False
+    bilibili_video_count = 0
+    faiss_available = False
+    try:
+        get_matcher, _, has_faiss = _lazy_bilibili_matcher()
+        faiss_available = bool(has_faiss)
+        m = get_matcher()
+        bilibili_ready = m.ready
+        bilibili_video_count = m.video_count
+    except Exception:
+        pass
     return jsonify({
         "status": "ok",
         "service": "wota-recognize",
         "technique_count": db.count(),
         "mediapipe_available": bool(has_mp),
         "opencv_available": _check_dep("cv2"),
+        "faiss_available": faiss_available,
+        "bilibili_db_ready": bilibili_ready,
+        "bilibili_video_count": bilibili_video_count,
     })
 
 

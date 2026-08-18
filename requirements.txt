@@ -14,3 +14,7 @@ mediapipe>=1.0.1
 # ===== 生产部署 (跨平台) =====
 # waitress 纯 Python，Windows/Linux 均可；gunicorn 仅 Linux，故弃用
 waitress
+
+# ===== B站视频溯源模块（Faiss 向量检索）=====
+# 未安装时 /match-video 接口优雅降级为"库未就绪"，不影响其他功能
+faiss-cpu

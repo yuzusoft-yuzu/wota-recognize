@@ -9,6 +9,8 @@ static/output/
 cloudflared.exe
 # MediaPipe PoseLandmarker 模型文件（5.7MB，部署时自动下载，不入库）
 *.task
+# B站溯源特征库（爬虫产出，不入库）
+data/
 # 部署辅助密钥/脚本（不推送）
 .wota_ecs_key
 .wota_ecs_key.pub

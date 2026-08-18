@@ -31,6 +31,29 @@
   </div>
 
   <div class="portal-status" id="portalStatus">正在加载系统状态…</div>
+
+  <!-- B站视频溯源（第二个模块：匹配完全相同/转载的B站视频，返回链接） -->
+  <section class="page" style="margin-top:32px">
+    <h2 class="page-title" style="font-size:1.4rem">🔎 B站视频溯源</h2>
+    <p class="page-desc">上传一段视频，系统提取关键帧特征，在B站wota艺视频库中找出最相似的B站视频并返回链接（匹配转载/同源视频）。</p>
+
+    <div class="panel">
+      <div id="matchDropzone" class="dropzone">
+        <div class="dz-icon">⬆️</div>
+        <div class="dz-text">点击或拖拽视频到此处上传</div>
+        <div class="dz-hint">mp4 / mov / webm / avi，50MB 以内</div>
+        <input type="file" id="matchFileInput" accept="video/*" hidden />
+        <div id="matchFileChosen" class="file-chosen" hidden></div>
+      </div>
+      <button id="matchSubmitBtn" class="btn primary" disabled>开始溯源匹配</button>
+    </div>
+
+    <div id="matchProgressBox" class="progress-box" hidden>
+      <div class="progress-label" id="matchProgressLabel">排队中…</div>
+      <div class="progress-track"><div class="progress-bar" id="matchProgressBar"></div></div>
+    </div>
+    <div id="matchResultBox" class="result-box" hidden></div>
+  </section>
 </section>
 {% endblock %}
 {% block scripts %}
@@ -38,7 +61,11 @@
 fetch('/api/health').then(r=>r.json()).then(d=>{
   const el=document.getElementById('portalStatus');
   const mp=d.mediapipe_available?'<b style="color:#7ee787">已启用骨骼融合</b>':'<b style="color:#f0883e">纯光棒模式（未安装 MediaPipe）</b>';
-  el.innerHTML=`已收录 <b>${d.technique_count}</b> 个技名 · ${mp}`;
+  const bili = d.faiss_available
+    ? (d.bilibili_db_ready ? ` · B站溯源库就绪（<b>${d.bilibili_video_count}</b> 个视频）` : ' · B站溯源库待建立')
+    : ' · B站溯源库未就绪（未装 faiss）';
+  el.innerHTML=`已收录 <b>${d.technique_count}</b> 个技名 · ${mp}${bili}`;
 }).catch(()=>{document.getElementById('portalStatus').textContent='系统状态获取失败';});
 </script>
+<script src="{{ url_for('static', filename='js/match.js') }}"></script>
 {% endblock %}
