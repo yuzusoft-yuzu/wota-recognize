@@ -7,3 +7,12 @@ static/output/
 .env
 *.log
 cloudflared.exe
+# MediaPipe PoseLandmarker 模型文件（5.7MB，部署时自动下载，不入库）
+*.task
+# 部署辅助密钥/脚本（不推送）
+.wota_ecs_key
+.wota_ecs_key.pub
+.sshpass.cmd
+.sshpass.py
+.genkey.bat
+ecs_*.ps1

@@ -41,11 +41,80 @@ except ImportError:
 
 # MediaPipe 可选：未安装时降级为纯光棒模式
 try:
+    # ---- 服务器无声卡兼容补丁 ----
+    # mediapipe 1.x 导入时会初始化 sounddevice(PortAudio)，无音频设备的环境
+    # （如云服务器）会抛 PortAudioError 导致整个 mediapipe 导入失败、误降级。
+    # 这里预注入一个最小 sounddevice stub（本项目只用 Pose，不碰音频 API），
+    # 让 mediapipe.tasks.python.audio 的 `import sounddevice` 静默通过。
+    import sys as _sys
+    import types as _types
+    if "sounddevice" not in _sys.modules:
+        _sd_stub = _types.ModuleType("sounddevice")
+        class _StubStream:  # 最小占位：仅保证 import 与类定义不报错
+            def __init__(self, *a, **kw):
+                pass
+            def start(self):
+                pass
+            def stop(self):
+                pass
+            def close(self):
+                pass
+        _sd_stub.InputStream = _StubStream
+        _sd_stub.OutputStream = _StubStream
+        _sd_stub.RawInputStream = _StubStream
+        _sd_stub.RawOutputStream = _StubStream
+        _sd_stub.query_devices = lambda *a, **kw: []
+        _sys.modules["sounddevice"] = _sd_stub
     import mediapipe as mp  # type: ignore
     _HAS_MP = True
-except Exception:
+    _MP_IMPORT_ERROR = None
+except Exception as _e:
     mp = None
     _HAS_MP = False
+    _MP_IMPORT_ERROR = _e
+
+# 探测 mediapipe API 代际：
+#   - 0.10.x 提供旧 API `mp.solutions.pose.Pose`（模型内置，无需 .task 文件）
+#   - 1.x    移除了 solutions，改用新 API `mp.tasks.python.vision.PoseLandmarker`
+#             （需要外部模型文件 pose_landmarker_lite.task）
+_MP_API = "none"
+if _HAS_MP:
+    try:
+        from mediapipe.solutions import pose as _mp_pose_mod  # type: ignore
+        _MP_API = "legacy"
+    except Exception:
+        try:
+            from mediapipe.tasks.python import vision as _mp_vision  # type: ignore
+            from mediapipe.tasks.python.core.base_options import BaseOptions as _MPBaseOptions  # type: ignore
+            from mediapipe.tasks.python.vision.core.vision_task_running_mode import VisionTaskRunningMode  # type: ignore
+            from mediapipe import Image as _MPImage, ImageFormat as _MPImageFormat  # type: ignore
+            _MP_API = "tasks"
+        except Exception:
+            _MP_API = "none"
+
+# PoseLandmarker 模型文件路径（仅新 API 需要）：
+#   优先环境变量 MEDIAPIPE_POSE_MODEL，否则取本文件同目录下的 pose_landmarker_lite.task
+def _default_model_path() -> str:
+    import os
+    env = os.environ.get("MEDIAPIPE_POSE_MODEL")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "pose_landmarker_lite.task")
+
+
+def _probe_skeleton_usable() -> bool:
+    """探测骨骼提取是否真正可用（mediapipe 导入 + SkeletonExtractor 构造成功）。
+    结果缓存，避免每次流水线初始化都重复构造 Pose 对象。"""
+    if not _HAS_MP:
+        return False
+    try:
+        se = SkeletonExtractor()
+        usable = se.available
+        se.close()
+        return usable
+    except Exception:
+        return False
 
 
 # ===================================================================
@@ -174,23 +243,50 @@ class SkeletonExtractor:
     """
     MediaPipe Pose 封装。每个实例拥有自己的 Pose 对象，
     便于在切片并行中每线程独立使用（避免线程安全问题）。
-    未安装 mediapipe 时 available=False，extract 返回空 Skeleton。
+    兼容 mediapipe 两代 API：
+      - legacy (0.10.x): mp.solutions.pose.Pose（模型内置）
+      - tasks  (1.x):    PoseLandmarker（需要 pose_landmarker_lite.task 模型文件）
+    未安装 mediapipe 或模型文件缺失时 available=False，extract 返回空 Skeleton。
     """
 
     def __init__(self, model_complexity: int = 0, min_conf: float = 0.4):
-        self.available = _HAS_MP
+        self.available = False
         self.pose = None
-        if self.available:
-            try:
+        self._api = "none"
+        if not _HAS_MP:
+            return
+        try:
+            if _MP_API == "legacy":
                 self.pose = mp.solutions.pose.Pose(
                     static_image_mode=True,
                     model_complexity=model_complexity,
                     enable_segmentation=False,
                     min_detection_confidence=min_conf,
                 )
-            except Exception:
-                self.available = False
-                self.pose = None
+                self._api = "legacy"
+                self.available = True
+            elif _MP_API == "tasks":
+                import os
+                model_path = _default_model_path()
+                if not model_path or not os.path.exists(model_path):
+                    # 模型文件缺失：新 API 无法工作，降级
+                    self.available = False
+                    return
+                options = _mp_vision.PoseLandmarkerOptions(
+                    base_options=_MPBaseOptions(model_asset_path=model_path),
+                    running_mode=VisionTaskRunningMode.IMAGE,
+                    num_poses=1,
+                    min_pose_detection_confidence=min_conf,
+                    min_pose_presence_confidence=min_conf,
+                    min_tracking_confidence=min_conf,
+                )
+                self.pose = _mp_vision.PoseLandmarker.create_from_options(options)
+                self._api = "tasks"
+                self.available = True
+        except Exception:
+            self.available = False
+            self.pose = None
+            self._api = "none"
 
     def extract(self, frame_bgr: np.ndarray) -> Skeleton:
         sk = Skeleton()
@@ -198,23 +294,34 @@ class SkeletonExtractor:
             return sk
         try:
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            res = self.pose.process(rgb)
-            if res.pose_landmarks:
-                lm = res.pose_landmarks.landmark
-                sk.found = True
-                sk.l_shoulder = Skeleton._xy(lm[LM_L_SHOULDER])
-                sk.r_shoulder = Skeleton._xy(lm[LM_R_SHOULDER])
-                sk.l_elbow = Skeleton._xy(lm[LM_L_ELBOW])
-                sk.r_elbow = Skeleton._xy(lm[LM_R_ELBOW])
-                sk.l_hip = Skeleton._xy(lm[LM_L_HIP])
-                sk.r_hip = Skeleton._xy(lm[LM_R_HIP])
-                sk.l_wrist = Skeleton._xy(lm[LM_L_WRIST])
-                sk.r_wrist = Skeleton._xy(lm[LM_R_WRIST])
-                sk.l_wrist_vis = float(lm[LM_L_WRIST].visibility)
-                sk.r_wrist_vis = float(lm[LM_R_WRIST].visibility)
+            if self._api == "legacy":
+                res = self.pose.process(rgb)
+                if res.pose_landmarks:
+                    lm = res.pose_landmarks.landmark
+                    self._fill(sk, lm)
+            elif self._api == "tasks":
+                mp_img = _MPImage(image_format=_MPImageFormat.SRGB, data=rgb)
+                res = self.pose.detect(mp_img)
+                if res.pose_landmarks and len(res.pose_landmarks) > 0:
+                    lm = res.pose_landmarks[0]
+                    self._fill(sk, lm)
         except Exception:
             pass
         return sk
+
+    def _fill(self, sk: Skeleton, lm) -> None:
+        """从 landmark 列表填充 Skeleton（两代 API 的 landmark 均含 .x/.y/.visibility）。"""
+        sk.found = True
+        sk.l_shoulder = Skeleton._xy(lm[LM_L_SHOULDER])
+        sk.r_shoulder = Skeleton._xy(lm[LM_R_SHOULDER])
+        sk.l_elbow = Skeleton._xy(lm[LM_L_ELBOW])
+        sk.r_elbow = Skeleton._xy(lm[LM_R_ELBOW])
+        sk.l_hip = Skeleton._xy(lm[LM_L_HIP])
+        sk.r_hip = Skeleton._xy(lm[LM_R_HIP])
+        sk.l_wrist = Skeleton._xy(lm[LM_L_WRIST])
+        sk.r_wrist = Skeleton._xy(lm[LM_R_WRIST])
+        sk.l_wrist_vis = float(lm[LM_L_WRIST].visibility)
+        sk.r_wrist_vis = float(lm[LM_R_WRIST].visibility)
 
     def close(self):
         if self.pose is not None:
@@ -490,13 +597,16 @@ class FusionPipeline:
         self.sampler = FrameSampler(step=step, max_frames=max_frames)
         self.enhancer = CLAHEEnhancer()
         self.n_workers = max(1, n_workers)
-        self.use_skeleton = use_skeleton and _HAS_MP
+        # 真实骨骼可用性：mediapipe 已导入 且 SkeletonExtractor 能成功构造
+        # （新 API 还需模型文件存在；旧 API 无需）。探测一次即可。
+        self._skeleton_usable = _probe_skeleton_usable()
+        self.use_skeleton = use_skeleton and self._skeleton_usable
         self.model_complexity = model_complexity
         self.meta: Dict[str, Any] = {}
 
     @property
     def has_mediapipe(self) -> bool:
-        return _HAS_MP
+        return self._skeleton_usable
 
     def _split_slices(self, frames: List[np.ndarray]) -> List[List[np.ndarray]]:
         n = len(frames)
