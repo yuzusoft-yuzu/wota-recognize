@@ -117,6 +117,39 @@ def _probe_skeleton_usable() -> bool:
         return False
 
 
+# 全局单例：PoseLandmarker（tasks API）加载极慢（数十秒），进程内只加载一次，
+# 所有 worker 共享同一实例，detect 调用用锁串行化保证线程安全。
+_pose_landmarker_singleton = None
+_pose_landmarker_lock = __import__("threading").Lock()
+_pose_landmarker_model_path = None  # 记录已加载的模型路径，用于避免重复加载
+
+
+def _get_pose_landmarker(min_conf: float = 0.4):
+    """懒加载全局单例 PoseLandmarker。首次调用加载模型（慢），之后直接复用。"""
+    global _pose_landmarker_singleton, _pose_landmarker_model_path
+    if _pose_landmarker_singleton is not None:
+        return _pose_landmarker_singleton
+    with _pose_landmarker_lock:
+        # 双重检查，避免并发重复加载
+        if _pose_landmarker_singleton is not None:
+            return _pose_landmarker_singleton
+        import os
+        model_path = _default_model_path()
+        if not model_path or not os.path.exists(model_path):
+            return None
+        options = _mp_vision.PoseLandmarkerOptions(
+            base_options=_MPBaseOptions(model_asset_path=model_path),
+            running_mode=VisionTaskRunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=min_conf,
+            min_pose_presence_confidence=min_conf,
+            min_tracking_confidence=min_conf,
+        )
+        _pose_landmarker_singleton = _mp_vision.PoseLandmarker.create_from_options(options)
+        _pose_landmarker_model_path = model_path
+        return _pose_landmarker_singleton
+
+
 # ===================================================================
 # 1. 动态抽帧
 # ===================================================================
@@ -253,6 +286,7 @@ class SkeletonExtractor:
         self.available = False
         self.pose = None
         self._api = "none"
+        self._owns_pose = False  # 是否本实例独占 pose（legacy 为 True；tasks 共享单例为 False）
         if not _HAS_MP:
             return
         try:
@@ -264,24 +298,15 @@ class SkeletonExtractor:
                     min_detection_confidence=min_conf,
                 )
                 self._api = "legacy"
+                self._owns_pose = True
                 self.available = True
             elif _MP_API == "tasks":
-                import os
-                model_path = _default_model_path()
-                if not model_path or not os.path.exists(model_path):
-                    # 模型文件缺失：新 API 无法工作，降级
+                self.pose = _get_pose_landmarker(min_conf)
+                if self.pose is None:
                     self.available = False
                     return
-                options = _mp_vision.PoseLandmarkerOptions(
-                    base_options=_MPBaseOptions(model_asset_path=model_path),
-                    running_mode=VisionTaskRunningMode.IMAGE,
-                    num_poses=1,
-                    min_pose_detection_confidence=min_conf,
-                    min_pose_presence_confidence=min_conf,
-                    min_tracking_confidence=min_conf,
-                )
-                self.pose = _mp_vision.PoseLandmarker.create_from_options(options)
                 self._api = "tasks"
+                self._owns_pose = False
                 self.available = True
         except Exception:
             self.available = False
@@ -301,7 +326,9 @@ class SkeletonExtractor:
                     self._fill(sk, lm)
             elif self._api == "tasks":
                 mp_img = _MPImage(image_format=_MPImageFormat.SRGB, data=rgb)
-                res = self.pose.detect(mp_img)
+                # 单例共享：detect 串行化，保证线程安全
+                with _pose_landmarker_lock:
+                    res = self.pose.detect(mp_img)
                 if res.pose_landmarks and len(res.pose_landmarks) > 0:
                     lm = res.pose_landmarks[0]
                     self._fill(sk, lm)
@@ -324,7 +351,8 @@ class SkeletonExtractor:
         sk.r_wrist_vis = float(lm[LM_R_WRIST].visibility)
 
     def close(self):
-        if self.pose is not None:
+        # tasks 单例共享：不关闭（其他实例还在用）；仅 legacy 独占实例才关闭
+        if self.pose is not None and self._owns_pose:
             try:
                 self.pose.close()
             except Exception:
@@ -341,6 +369,8 @@ class LightSpot:
     y: float = 0.0          # 归一化 y (0~1)
     brightness: float = 0.0 # 0~1
     area_norm: float = 0.0  # 面积 / 帧面积
+    orientation: float = 0.0  # 光斑主轴方向角(弧度 0~π)，由轮廓椭圆拟合得到
+    elongation: float = 1.0   # 椭圆长轴/短轴比 (>=1)，1=圆形，越大越接近光弧拖影
 
 
 class LightDetector:
@@ -379,7 +409,7 @@ class LightDetector:
             cx = (x0 + idx[1]) / w
             cy = (y0 + idx[0]) / h
             return LightSpot(True, float(cx), float(cy),
-                             float(v[idx]) / 255.0, 0.0)
+                             float(v[idx]) / 255.0, 0.0, 0.0, 1.0)
         # 形态学清理
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -388,6 +418,7 @@ class LightDetector:
             return None
         # 选最大且最亮的连通域
         best = None
+        best_cnt = None
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < self.min_area:
@@ -404,15 +435,35 @@ class LightDetector:
             cand = (area, mean_v, cx_p, cy_p)
             if best is None or (cand[1], cand[0]) > (best[1], best[0]):
                 best = cand
+                best_cnt = cnt
         if best is None:
             return None
         area, mean_v, cx_p, cy_p = best
+        # ---- 光弧几何特征：椭圆拟合得到主轴方向 + 椭圆度 ----
+        # 光棒拖影通常呈拉长条状，其主轴方向反映"横挥/竖挥/斜挥"，
+        # 椭圆度(长轴/短轴)反映"点状光斑 vs 拉长的光弧"。
+        orientation = 0.0
+        elongation = 1.0
+        if best_cnt is not None and len(best_cnt) >= 5:
+            try:
+                ellipse = cv2.fitEllipse(best_cnt)
+                (_, _), (major, minor), angle = ellipse
+                if minor > 1e-6:
+                    elongation = float(major) / float(minor)
+                    elongation = min(elongation, 20.0)  # 裁剪异常值
+                # angle 是度(0~180)，转弧度(0~π)
+                orientation = float(np.deg2rad(angle))
+            except Exception:
+                orientation = 0.0
+                elongation = 1.0
         return LightSpot(
             True,
             float((x0 + cx_p) / w),
             float((y0 + cy_p) / h),
             float(mean_v),
             float(area) / float(w * h),
+            orientation,
+            elongation,
         )
 
     def detect_global(self, frame_bgr: np.ndarray,
@@ -463,7 +514,7 @@ class FeatureBuilder:
     无骨骼时骨骼维置 0，光斑用全局坐标（部署内一致即可比对）。
     """
 
-    DIM = 28
+    DIM = 38
 
     @staticmethod
     def _angle(p, c, q) -> float:
@@ -519,7 +570,10 @@ class FeatureBuilder:
             if ls and rs:
                 f[17] = float(np.arctan2(rs[1] - ls[1], rs[0] - ls[0]) / np.pi)
 
-        # ---- 光棒 ----
+        # ---- 光棒 (每侧 10 维) ----
+        # slot 布局: [0]=dx [1]=dy [2]=brightness [3]=area [4]=speed
+        #            [5]=orient_sin [6]=orient_cos [7]=elongation_norm
+        #            [8]=vel_dir_sin [9]=vel_dir_cos
         def fill_light(slot, light, wrist, prev_light):
             if light is not None and light.found:
                 if wrist is not None:
@@ -536,9 +590,23 @@ class FeatureBuilder:
                         np.hypot(light.x - prev_light.x, light.y - prev_light.y) / 0.5,
                         1.0,
                     )
+                # 光弧主轴方向：用 sin(2θ)/cos(2θ) 消除 0/π 的符号跳变
+                f[slot + 5] = float(np.sin(2.0 * light.orientation))
+                f[slot + 6] = float(np.cos(2.0 * light.orientation))
+                # 椭圆度归一化：1(点状) -> 0，越大越接近拉长光弧 -> 1
+                f[slot + 7] = min((light.elongation - 1.0) / 9.0, 1.0)
+                # 光斑速度方向：刻画光弧运动走向/曲率
+                if prev_light is not None and prev_light.found:
+                    vx = light.x - prev_light.x
+                    vy = light.y - prev_light.y
+                    mag = np.hypot(vx, vy)
+                    if mag > 1e-6:
+                        ang = np.arctan2(vy, vx)
+                        f[slot + 8] = float(np.sin(ang))
+                        f[slot + 9] = float(np.cos(ang))
 
         fill_light(18, l_light, sk.l_wrist if sk.found else None, prev_l_light)
-        fill_light(23, r_light, sk.r_wrist if sk.found else None, prev_r_light)
+        fill_light(28, r_light, sk.r_wrist if sk.found else None, prev_r_light)
         return f
 
 
@@ -551,8 +619,10 @@ class SliceWorker:
     def __init__(self, enhancer: CLAHEEnhancer, use_skeleton: bool,
                  model_complexity: int = 0):
         self.enhancer = enhancer
-        self.skeleton = SkeletonExtractor(model_complexity=model_complexity) if use_skeleton else SkeletonExtractor()
-        # 即使 use_skeleton=False 也构造（available 会自动为 False 时降级）
+        if use_skeleton:
+            self.skeleton = SkeletonExtractor(model_complexity=model_complexity)
+        else:
+            self.skeleton = None  # 纯光棒模式：完全不构造 Pose（避免加载模型）
         self.light = LightDetector()
         self.builder = FeatureBuilder()
 
@@ -564,7 +634,7 @@ class SliceWorker:
         carry = 0
         for frame in frames:
             enhanced = self.enhancer.enhance(frame)
-            sk = self.skeleton.extract(enhanced)
+            sk = self.skeleton.extract(enhanced) if self.skeleton is not None else Skeleton()
             if not sk.found and last_sk is not None and carry < 5:
                 # 短暂丢失：沿用上一帧骨骼（时序平滑兜底）
                 sk = last_sk
@@ -582,7 +652,8 @@ class SliceWorker:
         return seq
 
     def close(self):
-        self.skeleton.close()
+        if self.skeleton is not None:
+            self.skeleton.close()
 
 
 # ===================================================================
@@ -598,8 +669,11 @@ class FusionPipeline:
         self.enhancer = CLAHEEnhancer()
         self.n_workers = max(1, n_workers)
         # 真实骨骼可用性：mediapipe 已导入 且 SkeletonExtractor 能成功构造
-        # （新 API 还需模型文件存在；旧 API 无需）。探测一次即可。
-        self._skeleton_usable = _probe_skeleton_usable()
+        # （新 API 还需模型文件存在；旧 API 无需）。仅在使用骨骼时探测一次。
+        if use_skeleton:
+            self._skeleton_usable = _probe_skeleton_usable()
+        else:
+            self._skeleton_usable = False
         self.use_skeleton = use_skeleton and self._skeleton_usable
         self.model_complexity = model_complexity
         self.meta: Dict[str, Any] = {}
@@ -732,8 +806,12 @@ class DTWMatcher:
     """
 
     # 默认权重：光棒维稍高（wota 的光棒轨迹是核心签名）
+    # 38 维 = 骨骼 18 + 光棒 20
+    # 光棒每侧 10 维布局: dx,dy,brightness,area,speed,orient_sin,orient_cos,elongation,vel_dir_sin,vel_dir_cos
+    # 光弧形状维(orient/elongation/vel_dir)给更高权重以强化形状判别
+    _LIGHT_SIDE_WEIGHTS = [1.3, 1.3, 1.0, 1.0, 1.3, 1.5, 1.5, 1.4, 1.5, 1.5]
     DEFAULT_WEIGHTS = np.array(
-        [1.0] * 18 + [1.3] * 10, dtype=np.float32
+        [1.0] * 18 + _LIGHT_SIDE_WEIGHTS * 2, dtype=np.float32
     )
 
     def __init__(self, sigma: float = 0.35, band: float = 0.3,
@@ -891,7 +969,7 @@ if __name__ == "__main__":
     res = pipe.extract(args.video)
     os.makedirs(args.output, exist_ok=True)
     prev = pipe.render_preview(args.video, os.path.join(args.output, "fusion_preview.png"))
-    print(f"抽取 {res['frame_count']} 帧特征 (28维/帧), 时长 {res['duration']:.1f}s")
+    print(f"抽取 {res['frame_count']} 帧特征 (38维/帧), 时长 {res['duration']:.1f}s")
     print(f"预览图: {prev}")
     seq = res["feature_sequence"]
     print(f"首帧特征: {[round(v,3) for v in seq[0]]}")
