@@ -831,6 +831,10 @@ class DTWMatcher:
         B = np.asarray(seq_b, dtype=np.float32)
         if A.size == 0 or B.size == 0:
             return float("inf"), 0
+        # 维度不匹配（如旧版 28 维数据 vs 新版 38 维）时直接判为不可比，
+        # 避免 numpy 广播报错导致整个识别崩溃。
+        if A.ndim != 2 or B.ndim != 2 or A.shape[1] != B.shape[1]:
+            return float("inf"), 0
         n, m = A.shape[0], B.shape[0]
         cost = self._cost_matrix(A, B)
         INF = float("inf")
