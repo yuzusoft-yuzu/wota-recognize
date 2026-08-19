@@ -45,6 +45,15 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 
+
+def safe_print(msg):
+    """安全打印：控制台是 GBK 时对特殊字符(如⚡emoji)会崩溃，用 replace 兜底。"""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        s = str(msg)
+        print(s.encode("gbk", errors="replace").decode("gbk", errors="replace"))
+
 # ---------- 路径 ----------
 BASE_DIR = Path(__file__).parent.resolve()
 DATA_DIR = BASE_DIR / "data"
@@ -109,28 +118,46 @@ def download_and_extract(bvid: str, link: str, n_frames: int = N_KEYFRAMES
     下载的视频处理完立即删除。失败返回 None。"""
     import cv2
 
-    tmp_dir = tempfile.mkdtemp(prefix="bilibili_")
-    tmp_video = os.path.join(tmp_dir, f"{bvid}.mp4")
+    # 临时下载目录放在工作区 data/.tmp_frames 下（避免系统 TEMP 权限限制）。
+    # 注意：不用 tempfile.mkdtemp（沙箱下其创建的子目录可能无写权限），
+    # 直接在 tmp_root 下用 bvid 命名文件。
+    tmp_root = DATA_DIR / ".tmp_frames"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    # yt-dlp cache 也放工作区（默认在用户目录，沙箱/权限可能限制）
+    ytdlp_cache = str(tmp_root / ".ytdlp_cache")
+    os.makedirs(ytdlp_cache, exist_ok=True)
+    tmp_video = str(tmp_root / f"{bvid}.mp4")
+    # 清理可能残留的 .part 文件
+    for part in (tmp_video, tmp_video + ".part"):
+        try:
+            if os.path.exists(part):
+                os.remove(part)
+        except OSError:
+            pass
     try:
-        # yt-dlp 下载（低画质，省带宽；B站需要 referer）
+        # yt-dlp 下载：B站是 dash 格式（音视频分离），我们只需视频帧抽关键帧，
+        # 故只下 video 流（省带宽、无需合并音频）。取480p以下最低画质。
+        # 用 encoding=utf-8 errors=replace 避免 GBK 控制台对特殊字符(如⚡)崩溃。
         cmd = [
-            "yt-dlp", "-f", "best[height<=480]/best",
+            "yt-dlp", "-f", "bestvideo[height<=640]/bestvideo[height<=480]/bestvideo/best",
             "-o", tmp_video,
             "--no-warnings", "--no-playlist", "--no-progress",
             "--no-check-certificate",
+            "--cache-dir", ytdlp_cache,
             "--add-header", "Referer:https://www.bilibili.com/",
             link,
         ]
-        ret = subprocess.run(cmd, capture_output=True, timeout=180, text=True)
+        ret = subprocess.run(cmd, capture_output=True, timeout=180,
+                             text=True, encoding="utf-8", errors="replace")
         if ret.returncode != 0 or not os.path.exists(tmp_video):
             stderr = (ret.stderr or "")[-200:]
-            print(f"    [yt-dlp失败] {bvid}: {stderr.strip()[:80]}")
+            safe_print(f"    [yt-dlp失败] {bvid}: {stderr.strip()[:80]}")
             return None
 
         # OpenCV 抽关键帧
         cap = cv2.VideoCapture(tmp_video)
         if not cap.isOpened():
-            print(f"    [打开失败] {bvid}")
+            safe_print(f"    [打开失败] {bvid}")
             return None
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total < n_frames:
@@ -153,7 +180,7 @@ def download_and_extract(bvid: str, link: str, n_frames: int = N_KEYFRAMES
             cap.release()
 
         if not frames:
-            print(f"    [无帧] {bvid}")
+            safe_print(f"    [无帧] {bvid}")
             return None
 
         # 提取特征（复用 skeleton_light_fusion 链路）
@@ -184,24 +211,30 @@ def download_and_extract(bvid: str, link: str, n_frames: int = N_KEYFRAMES
         return feats
 
     except subprocess.TimeoutExpired:
-        print(f"    [超时] {bvid}")
+        safe_print(f"    [超时] {bvid}")
         return None
     except Exception as e:
-        print(f"    [异常] {bvid}: {type(e).__name__}: {e}")
+        safe_print(f"    [异常] {bvid}: {type(e).__name__}: {e}")
         return None
     finally:
         # 删除临时视频文件（合规：不保留）
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            if os.path.exists(tmp_video):
+                os.remove(tmp_video)
+            if os.path.exists(tmp_video + ".part"):
+                os.remove(tmp_video + ".part")
+        except OSError:
+            pass
 
 
 # ---------- Faiss 索引构建 ----------
 def build_index(all_vectors: List[np.ndarray], all_meta: List[Dict[str, Any]]):
     """构建 Faiss IndexFlatIP + 元数据db。"""
     if not _HAS_FAISS:
-        print("[错误] 未安装 faiss，无法构建索引")
+        safe_print("[错误] 未安装 faiss，无法构建索引")
         return
     if not all_vectors:
-        print("[警告] 无向量，跳过索引构建")
+        safe_print("[警告] 无向量，跳过索引构建")
         return
 
     vecs = np.asarray(all_vectors, dtype=np.float32)
@@ -210,7 +243,7 @@ def build_index(all_vectors: List[np.ndarray], all_meta: List[Dict[str, Any]]):
     index = faiss.IndexFlatIP(FEATURE_DIM)
     index.add(vecs)
     faiss.write_index(index, INDEX_PATH)
-    print(f"Faiss 索引已写入: {INDEX_PATH} ({index.ntotal} 个向量)")
+    safe_print(f"Faiss 索引已写入: {INDEX_PATH} ({index.ntotal} 个向量)")
 
     # 元数据 db
     conn = sqlite3.connect(META_DB_PATH)
@@ -231,7 +264,7 @@ def build_index(all_vectors: List[np.ndarray], all_meta: List[Dict[str, Any]]):
     )
     conn.commit()
     conn.close()
-    print(f"元数据已写入: {META_DB_PATH} ({len(all_meta)} 条)")
+    safe_print(f"元数据已写入: {META_DB_PATH} ({len(all_meta)} 条)")
 
 
 def rebuild_index_only():
@@ -239,7 +272,7 @@ def rebuild_index_only():
     需要特征缓存文件 data/feature_cache.db。"""
     cache_db = str(DATA_DIR / "feature_cache.db")
     if not os.path.exists(cache_db):
-        print("[错误] 无特征缓存，需先运行完整提取")
+        safe_print("[错误] 无特征缓存，需先运行完整提取")
         return
     conn = sqlite3.connect(cache_db)
     conn.row_factory = sqlite3.Row
@@ -312,35 +345,35 @@ def run(limit: int = 10**9):
     init_feature_cache()
     progress = load_progress()
     processed = set(progress["processed_bvids"])
-    print(f"已处理视频: {len(processed)} 个")
+    safe_print(f"已处理视频: {len(processed)} 个")
 
     videos = get_videos_to_process(limit, processed)
-    print(f"待处理视频: {len(videos)} 个")
+    safe_print(f"待处理视频: {len(videos)} 个")
 
     success = 0
     for i, v in enumerate(videos):
         bvid = v["bvid"]
-        print(f"\n[{i+1}/{len(videos)}] {bvid} (播放 {v['play_count']}) {v['title'][:25]}")
+        safe_print(f"\n[{i+1}/{len(videos)}] {bvid} (播放 {v['play_count']}) {v['title'][:25]}")
         feats = download_and_extract(bvid, v["link"])
         if feats:
             cache_features(bvid, v, feats)
             success += 1
-            print(f"    提取 {len(feats)} 帧 OK")
+            safe_print(f"    提取 {len(feats)} 帧 OK")
         else:
-            print(f"    跳过（提取失败）")
+            safe_print(f"    跳过（提取失败）")
         processed.add(bvid)
         progress["processed_bvids"] = list(processed)
         save_progress(progress)
         if i < len(videos) - 1:
             time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
-    print(f"\n提取完成: 成功 {success}/{len(videos)}")
+    safe_print(f"\n提取完成: 成功 {success}/{len(videos)}")
 
     # 构建索引
-    print("\n构建 Faiss 索引...")
+    safe_print("\n构建 Faiss 索引...")
     vecs, metas = load_cached_vectors()
     build_index(vecs, metas)
-    print(f"索引向量总数: {len(vecs)}")
+    safe_print(f"索引向量总数: {len(vecs)}")
 
 
 def main():
