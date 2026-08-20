@@ -37,6 +37,7 @@ from urllib.parse import quote
 
 import urllib.request
 import urllib.error
+import http.cookiejar
 
 # ---------- 配置 ----------
 BASE_DIR = Path(__file__).parent.resolve()
@@ -74,6 +75,23 @@ SLEEP_MIN = 2.0
 SLEEP_MAX = 5.0
 MAX_PAGES_PER_KEYWORD = 50       # 每个关键词最多翻 50 页
 PAGE_SIZE = 20                    # B站搜索每页约 20 条
+
+# ---------- 带 cookie 的 opener（绕过B站 412 反爬）----------
+# B站搜索API需要 buvid3 cookie，否则返回 412 Precondition Failed。
+# 先访问B站首页自动获取 cookie，后续请求复用。
+_cj = http.cookiejar.CookieJar()
+_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_cj))
+
+
+def _ensure_cookie():
+    """确保已获取 buvid3 cookie（访问B站首页触发下发）。"""
+    if any(c.name == "buvid3" for c in _cj):
+        return
+    req = urllib.request.Request("https://www.bilibili.com/", headers={"User-Agent": UA})
+    try:
+        _opener.open(req, timeout=15).read()
+    except Exception as e:
+        print(f"  [cookie获取警告] {type(e).__name__}: {e}")
 
 
 # ---------- 数据库 ----------
@@ -147,17 +165,20 @@ def save_state(state: Dict[str, Any]):
 
 
 # ---------- 爬虫 ----------
-def search_videos(keyword: str, page: int) -> Optional[Dict[str, Any]]:
-    """调B站搜索接口，返回单页结果。失败返回 None。"""
+def search_videos(keyword: str, page: int, order: str = "click") -> Optional[Dict[str, Any]]:
+    """调B站搜索接口，返回单页结果。失败返回 None。
+    带 buvid3 cookie 绕过 412 反爬。
+    order: click=按播放量, pubdate=按发布时间（增量爬取用）"""
+    _ensure_cookie()
     url = (f"{SEARCH_URL}?search_type=video&keyword={quote(keyword)}"
-           f"&order=click&page={page}&page_size={PAGE_SIZE}")
+           f"&order={order}&page={page}&page_size={PAGE_SIZE}")
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
         "Referer": "https://search.bilibili.com/",
         "Accept": "application/json",
     })
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _opener.open(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if data.get("code") != 0:
             print(f"  [警告] 搜索返回 code={data.get('code')} msg={data.get('message')}")
@@ -261,6 +282,46 @@ def run_crawl(tiers_filter: Optional[List[str]] = None,
     print(f"{'='*60}")
 
 
+def run_incremental(max_new: int = 50, max_pages: int = 5):
+    """增量爬取：按发布时间(order=pubdate)爬最新 wota艺 视频，只收库里没有的新 bvid。
+    用于每周热更新，不重新爬旧数据。"""
+    init_db()
+    existing = get_existing_bvids()
+    print(f"[增量] 现有视频: {len(existing)} 个，目标新增: {max_new} 个")
+
+    added = 0
+    for kw in KEYWORDS:
+        if added >= max_new:
+            break
+        print(f"\n[增量] 关键词「{kw}」按发布时间爬取...")
+        for page in range(1, max_pages + 1):
+            if added >= max_new:
+                break
+            data = search_videos(kw, page, order="pubdate")
+            if data is None:
+                print(f"  第{page}页请求失败，跳过")
+                break
+            results = data.get("result") or []
+            if not results:
+                break
+            page_added = 0
+            for v in results:
+                bvid = v.get("bvid", "")
+                if not bvid or bvid in existing:
+                    continue
+                save_video(v, "增量更新")
+                existing.add(bvid)
+                added += 1
+                page_added += 1
+                if added >= max_new:
+                    break
+            print(f"  第{page}页: 新增 {page_added} 个，累计 {added}")
+            time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+
+    print(f"\n[增量] 完成！本次新增 {added} 个，总计 {count_videos()} 个视频")
+    return added
+
+
 # ---------- 命令行 ----------
 def main():
     parser = argparse.ArgumentParser(description="B站 Wota艺 视频元数据爬虫")
@@ -270,14 +331,23 @@ def main():
                         help="只爬指定梯队名（如 '1万以上'），默认全部")
     parser.add_argument("--reset-state", action="store_true",
                         help="重置断点状态（不清空数据库，只重新翻页）")
+    parser.add_argument("--incremental", action="store_true",
+                        help="增量模式：按发布时间爬最新视频（热更新用）")
+    parser.add_argument("--max-new", type=int, default=50,
+                        help="增量模式最多新增视频数（默认50）")
+    parser.add_argument("--max-pages", type=int, default=5,
+                        help="增量模式每关键词最多翻页数（默认5）")
     args = parser.parse_args()
 
     if args.reset_state and os.path.exists(STATE_PATH):
         os.remove(STATE_PATH)
         print("已重置断点状态")
 
-    tiers_filter = [args.tier] if args.tier else None
-    run_crawl(tiers_filter=tiers_filter, max_per_tier=args.max_per_tier)
+    if args.incremental:
+        run_incremental(max_new=args.max_new, max_pages=args.max_pages)
+    else:
+        tiers_filter = [args.tier] if args.tier else None
+        run_crawl(tiers_filter=tiers_filter, max_per_tier=args.max_per_tier)
 
 
 if __name__ == "__main__":
