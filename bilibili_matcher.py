@@ -36,10 +36,16 @@ DHASH_DB_PATH = str(DATA_DIR / "bilibili_dhash.db")
 HASH_SIZE = 16          # 16x16 -> 256 位
 HASH_BITS = HASH_SIZE * HASH_SIZE
 
-# 匹配参数（经实验确定：同视频片段距离 3~18，不同视频 >100）
-DEFAULT_THRESHOLD = 40    # 汉明距离 < 40 视为"同一帧"
-DEFAULT_MIN_VOTES = 3     # 至少 3 帧命中才判定为同一视频
-DEFAULT_N_FRAMES = 30     # 查询视频抽 30 帧（配合库60帧/视频的密度）
+# HSV 颜色直方图参数
+HIST_BINS = (8, 8, 8)   # H/S/V 各 8 个 bin -> 512 维
+HIST_DIM = 8 * 8 * 8
+
+# 匹配参数（经实验确定：同视频片段 dHash 距离 3~18、颜色距离 ~0.15；
+# 不同视频 dHash 距离 >100 或颜色距离 >0.5）
+DEFAULT_THRESHOLD = 40       # 汉明距离 < 40 视为"同一帧"
+DEFAULT_HIST_THRESHOLD = 0.5  # 颜色卡方距离 < 0.5 视为"同一帧"（排除画面相似但颜色不同的误匹配）
+DEFAULT_MIN_VOTES = 3        # 至少 3 帧命中才判定为同一视频
+DEFAULT_N_FRAMES = 30        # 查询视频抽 30 帧（配合库60帧/视频的密度）
 
 
 # ---------- dHash 感知哈希 ----------
@@ -62,6 +68,19 @@ def hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
 
 
+def hsv_hist(frame_bgr: np.ndarray) -> np.ndarray:
+    """计算一帧的 HSV 量化颜色直方图（512维，归一化）。"""
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1, 2], None, HIST_BINS, [0, 180, 0, 256, 0, 256])
+    cv2.normalize(hist, hist)
+    return hist.flatten()
+
+
+def hist_chi2(h1: np.ndarray, h2: np.ndarray) -> float:
+    """两个颜色直方图的卡方距离。"""
+    return float(cv2.compareHist(h1.reshape(-1, 1), h2.reshape(-1, 1), cv2.HISTCMP_CHISQR))
+
+
 def _brightness(frame_bgr: np.ndarray) -> float:
     """帧平均亮度 0~255，用于跳过全黑帧。"""
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -69,9 +88,9 @@ def _brightness(frame_bgr: np.ndarray) -> float:
 
 
 def extract_query_hashes(video_path: str, n_frames: int = DEFAULT_N_FRAMES,
-                         min_brightness: float = 10.0) -> List[int]:
-    """从用户视频均匀抽 n_frames 个关键帧，每帧提取 dHash。
-    跳过过暗的帧（全黑帧 dHash 会误匹配）。返回 256位 int 列表。"""
+                         min_brightness: float = 10.0) -> List[Tuple[int, np.ndarray]]:
+    """从用户视频均匀抽 n_frames 个关键帧，每帧提取 (dHash, HSV颜色直方图)。
+    跳过过暗的帧（全黑帧会误匹配）。返回 [(dhash_int, hist_array), ...]"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return []
@@ -80,7 +99,7 @@ def extract_query_hashes(video_path: str, n_frames: int = DEFAULT_N_FRAMES,
         cap.release()
         return []
     idxs = np.linspace(0, total - 1, min(n_frames * 2, total)).astype(int)
-    hashes: List[int] = []
+    feats: List[Tuple[int, np.ndarray]] = []
     for i in idxs:
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ok, fr = cap.read()
@@ -88,11 +107,11 @@ def extract_query_hashes(video_path: str, n_frames: int = DEFAULT_N_FRAMES,
             continue
         if _brightness(fr) < min_brightness:
             continue  # 跳过过暗帧
-        hashes.append(dhash(fr))
-        if len(hashes) >= n_frames:
+        feats.append((dhash(fr), hsv_hist(fr)))
+        if len(feats) >= n_frames:
             break
     cap.release()
-    return hashes
+    return feats
 
 
 # ---------- 匹配器 ----------
@@ -104,7 +123,7 @@ class BilibiliMatcher:
         self._lock = threading.Lock()
         self._loaded = False
         self._mtime = 0.0  # 数据库文件修改时间，用于热更新检测
-        self._hashes: List[Tuple[int, Dict[str, Any]]] = []  # [(hash_int, meta), ...]
+        self._hashes: List[Tuple[int, Optional[np.ndarray], Dict[str, Any]]] = []  # [(dhash_int, hist, meta), ...]
         self._bvid_index: Dict[str, Dict[str, Any]] = {}     # bvid -> 视频元数据
 
     def _db_mtime(self) -> float:
@@ -134,10 +153,19 @@ class BilibiliMatcher:
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT bvid, title, up_name, play_count, link, frame_idx, hash_hex "
-                "FROM dhash ORDER BY bvid, frame_idx"
-            ).fetchall()
+            # 兼容：hist_hex 列可能不存在（旧库），先探测
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(dhash)").fetchall()]
+            has_hist = "hist_hex" in cols
+            if has_hist:
+                rows = conn.execute(
+                    "SELECT bvid, title, up_name, play_count, link, frame_idx, hash_hex, hist_hex "
+                    "FROM dhash ORDER BY bvid, frame_idx"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT bvid, title, up_name, play_count, link, frame_idx, hash_hex, NULL as hist_hex "
+                    "FROM dhash ORDER BY bvid, frame_idx"
+                ).fetchall()
             conn.close()
             self._hashes = []
             self._bvid_index = {}
@@ -147,7 +175,10 @@ class BilibiliMatcher:
                     "up_name": r["up_name"] or "", "play_count": int(r["play_count"] or 0),
                     "link": r["link"] or "",
                 }
-                self._hashes.append((int(r["hash_hex"], 16), meta))
+                hist = None
+                if r["hist_hex"]:
+                    hist = self._hist_from_hex(r["hist_hex"])
+                self._hashes.append((int(r["hash_hex"], 16), hist, meta))
                 if r["bvid"] not in self._bvid_index:
                     self._bvid_index[r["bvid"]] = meta
             self._loaded = True
@@ -158,6 +189,15 @@ class BilibiliMatcher:
             self._hashes = []
             self._bvid_index = {}
             return False
+
+    @staticmethod
+    def _hist_from_hex(hex_str: str) -> Optional[np.ndarray]:
+        """从 hex 字符串还原颜色直方图（float32 数组）。"""
+        try:
+            arr = np.frombuffer(bytes.fromhex(hex_str), dtype=np.float32)
+            return arr if arr.size == HIST_DIM else None
+        except Exception:
+            return None
 
     def refresh_if_changed(self) -> bool:
         """检测数据库文件是否变化，变化则热重载。返回库是否就绪。"""
@@ -180,38 +220,46 @@ class BilibiliMatcher:
     def hash_count(self) -> int:
         return len(self._hashes)
 
-    def match(self, query_hashes: List[int],
+    def match(self, query_feats: List[Tuple[int, np.ndarray]],
               top_k: int = 5, threshold: int = DEFAULT_THRESHOLD,
+              hist_threshold: float = DEFAULT_HIST_THRESHOLD,
               min_votes: int = DEFAULT_MIN_VOTES) -> List[Dict[str, Any]]:
-        """对用户视频的 dHash 序列做溯源匹配，返回 Top-K 的B站视频。
+        """对用户视频的 (dHash, 颜色直方图) 序列做溯源匹配，返回 Top-K 的B站视频。
 
-        query_hashes: 用户视频关键帧的 dHash 列表（256位 int）
+        query_feats: 用户视频关键帧的 [(dhash_int, hist_array), ...]
         threshold: 汉明距离 < threshold 视为同一帧
+        hist_threshold: 颜色卡方距离 < hist_threshold 视为同一帧（排除画面相似但颜色不同的误匹配）
         min_votes: 至少 min_votes 帧命中才判定同一视频
         返回: [{"bvid","title","link","up_name","play_count",
                 "votes","min_distance","similarity"}, ...]
         """
-        if not self.ready or not query_hashes:
+        if not self.ready or not query_feats:
             return []
-        # 逐帧比对所有库哈希，找命中
+        # 逐帧比对所有库哈希，找命中（dHash 距离 AND 颜色距离 双条件）
         bvid_hits: Dict[str, Dict[str, Any]] = {}
-        for qh in query_hashes:
-            for hh, meta in self._hashes:
+        for qh, qhist in query_feats:
+            for hh, lhist, meta in self._hashes:
                 d = hamming(qh, hh)
-                if d < threshold:
-                    bvid = meta["bvid"]
-                    st = bvid_hits.get(bvid)
-                    if st is None:
-                        st = {
-                            "bvid": bvid, "title": meta["title"],
-                            "link": meta["link"], "up_name": meta["up_name"],
-                            "play_count": meta["play_count"],
-                            "votes": 0, "min_distance": d,
-                        }
-                        bvid_hits[bvid] = st
-                    st["votes"] += 1
-                    if d < st["min_distance"]:
-                        st["min_distance"] = d
+                if d >= threshold:
+                    continue
+                # 颜色过滤：仅当库帧有颜色特征时才比较（旧库兼容）
+                if lhist is not None and qhist is not None:
+                    c = hist_chi2(qhist, lhist)
+                    if c >= hist_threshold:
+                        continue
+                bvid = meta["bvid"]
+                st = bvid_hits.get(bvid)
+                if st is None:
+                    st = {
+                        "bvid": bvid, "title": meta["title"],
+                        "link": meta["link"], "up_name": meta["up_name"],
+                        "play_count": meta["play_count"],
+                        "votes": 0, "min_distance": d,
+                    }
+                    bvid_hits[bvid] = st
+                st["votes"] += 1
+                if d < st["min_distance"]:
+                    st["min_distance"] = d
         if not bvid_hits:
             return []
         results = []
