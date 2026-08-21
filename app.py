@@ -101,6 +101,14 @@ def _preload_deps():
         print(f"[预加载] 数据库就绪: {app.config['DB_PATH']} (技术数: {get_db().count()})")
     except Exception as e:
         print(f"[预加载] 数据库失败: {e}")
+    try:
+        _lazy_bilibili_matcher()
+        from bilibili_matcher import get_matcher
+        m = get_matcher()
+        ok = m.load()
+        print(f"[预加载] B站溯源库: {'就绪' if ok else '未就绪'} (视频数: {m.video_count}, 帧数: {m.hash_count})")
+    except Exception as e:
+        print(f"[预加载] B站溯源库失败: {e}")
     print("[预加载] 完成")
 
 
